@@ -450,6 +450,22 @@ async def get_history(_: None = Depends(verify_token)):
     return {"history": history_store.load()}
 
 
+@app.delete("/api/history")
+async def clear_history(_: None = Depends(verify_token)):
+    """清空全部历史：删除 output/ 下所有文件，并清空 history.json。不可恢复。"""
+    deleted: list[str] = []
+    if config.OUTPUT_DIR.exists():
+        for p in config.OUTPUT_DIR.iterdir():
+            if p.is_file():
+                try:
+                    p.unlink()
+                    deleted.append(p.name)
+                except Exception:
+                    pass
+    history_store.clear()
+    return {"ok": True, "deleted": deleted, "count": len(deleted)}
+
+
 @app.delete("/api/history/{name}")
 async def delete_history_item(name: str, _: None = Depends(verify_token)):
     """删除音频文件及其元数据、字幕文件。"""

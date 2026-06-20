@@ -54,6 +54,11 @@ def remove(audio_name: str) -> None:
     save(items)
 
 
+def clear() -> None:
+    """清空全部历史记录。"""
+    save([])
+
+
 def _migrate_from_output() -> None:
     """首次运行：把 output/ 下的 *.json 元数据迁移到 data/history.json。
 
