@@ -1,0 +1,415 @@
+"""FastAPI 应用入口：路由 + SSE 进度推送。"""
+from __future__ import annotations
+
+import asyncio
+import json
+import webbrowser
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
+
+from . import config, pipeline
+from .pipeline import TaskState
+
+# 全局任务表：task_id -> TaskState（含一个进度队列供 SSE 订阅）
+_tasks: dict[str, TaskState] = {}
+_queues: dict[str, asyncio.Queue] = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动时尝试打开浏览器（本地工具，方便使用）
+    config.OUTPUT_DIR.mkdir(exist_ok=True)
+    try:
+        webbrowser.open(f"http://127.0.0.1:{config.PORT}")
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="ytudio — YouTube → 中文音频", lifespan=lifespan)
+templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "has_deepseek_key": config.has_deepseek_key(),
+            "has_cookies": config.cookies_file_to_use() != "",
+            "default_voice": config.TTS_VOICE,
+        },
+    )
+
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "has_deepseek_key": config.has_deepseek_key(),
+        "has_cookies": config.cookies_file_to_use() != "",
+        "cookies_source": _cookies_source(),
+        "default_voice": config.TTS_VOICE,
+    }
+
+
+# edge-tts 可用中文音色（名称/性别/地区/方言备注）
+ZH_VOICES = [
+    {"name": "zh-CN-XiaoxiaoNeural", "gender": "女", "label": "晓晓 · 普通话（自然，推荐）"},
+    {"name": "zh-CN-XiaoyiNeural", "gender": "女", "label": "晓伊 · 普通话"},
+    {"name": "zh-CN-YunxiNeural", "gender": "男", "label": "云希 · 普通话（自然）"},
+    {"name": "zh-CN-YunyangNeural", "gender": "男", "label": "云扬 · 普通话（新闻播报）"},
+    {"name": "zh-CN-YunjianNeural", "gender": "男", "label": "云健 · 普通话"},
+    {"name": "zh-CN-YunxiaNeural", "gender": "男", "label": "云夏 · 普通话（童声）"},
+    {"name": "zh-CN-liaoning-XiaobeiNeural", "gender": "女", "label": "晓贝 · 东北话"},
+    {"name": "zh-CN-shaanxi-XiaoniNeural", "gender": "女", "label": "晓妮 · 陕西话"},
+    {"name": "zh-HK-HiuGaaiNeural", "gender": "女", "label": "曉佳 · 粤语"},
+    {"name": "zh-HK-HiuMaanNeural", "gender": "女", "label": "曉曼 · 粤语"},
+    {"name": "zh-HK-WanLungNeural", "gender": "男", "label": "雲龍 · 粤语"},
+    {"name": "zh-TW-HsiaoChenNeural", "gender": "女", "label": "曉臻 · 台湾国语"},
+    {"name": "zh-TW-HsiaoYuNeural", "gender": "女", "label": "曉雨 · 台湾国语"},
+    {"name": "zh-TW-YunJheNeural", "gender": "男", "label": "雲哲 · 台湾国语"},
+]
+
+
+@app.get("/api/voices")
+async def voices_list():
+    """返回可用中文音色列表。"""
+    return {"voices": ZH_VOICES, "default": config.TTS_VOICE}
+
+
+@app.get("/api/voice/preview/{voice}")
+async def voice_preview(voice: str):
+    """生成一句话试听音频（缓存到 data/preview_<voice>.mp3）。"""
+    import edge_tts
+    if "/" in voice or ".." in voice or not voice.startswith("zh-"):
+        raise HTTPException(400, "非法音色名")
+    preview_dir = config.DATA_DIR / "previews"
+    preview_dir.mkdir(exist_ok=True)
+    path = preview_dir / f"{voice}.mp3"
+    if not path.exists():
+        communicate = edge_tts.Communicate(
+            "你好，这是语音试听。开车听音频，请注意安全。", voice
+        )
+        await communicate.save(str(path))
+    return FileResponse(path, media_type="audio/mpeg", filename=f"{voice}.mp3")
+
+
+def _cookies_source() -> str:
+    """返回 cookies 来源描述，供界面展示。"""
+    if config.COOKIES_FILE:
+        return "env"
+    if config.COOKIES_FROM_BROWSER:
+        return config.COOKIES_FROM_BROWSER
+    if config.COOKIES_RUNTIME_FILE.exists():
+        return "upload"
+    return ""
+
+
+# Netscape cookies.txt 头部标识
+_NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
+
+
+def _validate_netscape_cookies(content: str) -> tuple[bool, str, int]:
+    """校验 cookies 文本是否为合法 Netscape 格式。返回 (是否有效, 信息, cookie 行数)。"""
+    if not content.strip():
+        return False, "内容为空", 0
+    lines = content.splitlines()
+    cookie_lines = 0
+    has_header = False
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            if _NETSCAPE_HEADER in s:
+                has_header = True
+            continue
+        # 非注释行：应为 7 个 tab 分隔字段
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            cookie_lines += 1
+    if cookie_lines == 0:
+        return False, "未找到有效的 cookie 行（每行需 7 个 tab 分隔字段）", 0
+    return True, (f"包含 {cookie_lines} 条 cookie" + ("（含 Netscape 头）" if has_header else "")), cookie_lines
+
+
+@app.get("/api/cookies")
+async def cookies_get():
+    """返回 cookies 状态（不返回内容，安全考虑）。"""
+    return {
+        "has_cookies": config.cookies_file_to_use() != "",
+        "source": _cookies_source(),
+    }
+
+
+@app.post("/api/cookies")
+async def cookies_save(content: str = Form(...)):
+    """保存用户粘贴/上传的 cookies.txt 内容（Netscape 格式）。"""
+    content = content.strip()
+    ok, msg, count = _validate_netscape_cookies(content)
+    if not ok:
+        raise HTTPException(400, f"cookies 格式无效：{msg}")
+    # 若未含 Netscape 头，补上
+    if _NETSCAPE_HEADER not in content:
+        content = _NETSCAPE_HEADER + "\n" + content
+    config.COOKIES_RUNTIME_FILE.write_text(content, encoding="utf-8")
+    return {"ok": True, "message": msg, "count": count, "source": "upload"}
+
+
+@app.delete("/api/cookies")
+async def cookies_clear():
+    """清除页面上传的 cookies 文件（不影响环境变量配置）。"""
+    if config.COOKIES_RUNTIME_FILE.exists():
+        config.COOKIES_RUNTIME_FILE.unlink()
+    return {"ok": True, "has_cookies": config.cookies_file_to_use() != ""}
+
+
+def _put(task_id: str, state: TaskState) -> None:
+    """把当前状态推入对应 SSE 队列。"""
+    q = _queues.get(task_id)
+    if q is not None:
+        q.put_nowait({
+            "stage": state.stage,
+            "percent": state.percent,
+            "message": state.message,
+            "error": state.error,
+            "done": state.stage in ("done", "error"),
+        })
+
+
+@app.post("/api/process")
+async def process(
+    url: str = Form(...),
+    mode: str = Form(...),
+    voice: str = Form(default=""),
+):
+    url = url.strip()
+    mode = mode.strip()
+    voice = voice.strip()
+    if mode not in (pipeline.MODE_AUDIO, pipeline.MODE_SUBTITLE_TTS):
+        raise HTTPException(400, "无效的模式")
+    if not url:
+        raise HTTPException(400, "URL 不能为空")
+    if mode == pipeline.MODE_SUBTITLE_TTS and not config.has_deepseek_key():
+        raise HTTPException(
+            400, "字幕翻译模式需要 DEEPSEEK_API_KEY，请在 .env 中配置后重启。"
+        )
+
+    state = TaskState()
+    _tasks[state.task_id] = state
+    _queues[state.task_id] = asyncio.Queue()
+
+    def progress(stage: str, percent: int, message: str) -> None:
+        state.stage = stage
+        state.percent = percent
+        state.message = message
+        _put(state.task_id, state)
+
+    # 后台运行任务（voice 仅 TTS 模式生效）
+    asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice))
+
+    return {"task_id": state.task_id}
+
+
+@app.get("/api/progress/{task_id}")
+async def progress_stream(task_id: str):
+    """SSE：实时推送任务进度，结束后发送最终状态并关闭。"""
+    if task_id not in _tasks:
+        raise HTTPException(404, "任务不存在")
+
+    queue = _queues.setdefault(task_id, asyncio.Queue())
+    state = _tasks[task_id]
+
+    async def event_generator():
+        # 先补发当前状态
+        yield f"data: {json.dumps({'stage': state.stage, 'percent': state.percent, 'message': state.message, 'error': state.error, 'done': state.stage in ('done', 'error')})}\n\n"
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # 心跳保活
+                    yield ": keep-alive\n\n"
+                    continue
+                yield f"data: {json.dumps(msg)}\n\n"
+                if msg.get("done"):
+                    # 发送最终结果摘要
+                    if state.result:
+                        final = {
+                            "done": True,
+                            "stage": state.stage,
+                            "error": state.error,
+                            "result": {
+                                "title": state.result.title,
+                                "uploader": state.result.uploader,
+                                "mode": state.result.mode,
+                                "audio_url": state.result.audio_url,
+                                "audio_name": state.result.audio_path.name,
+                            },
+                        }
+                        yield f"data: {json.dumps(final)}\n\n"
+                    break
+        finally:
+            _queues.pop(task_id, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+_MIME_BY_EXT = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".opus": "audio/ogg",
+}
+
+
+def _audio_mime(name: str) -> str:
+    ext = Path(name).suffix.lower()
+    return _MIME_BY_EXT.get(ext, "audio/mpeg")
+
+
+@app.get("/audio/{name}")
+async def serve_audio(name: str):
+    """提供生成的音频文件播放。"""
+    if "/" in name or ".." in name:
+        raise HTTPException(400, "非法文件名")
+    path = config.OUTPUT_DIR / name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "音频文件不存在")
+    return FileResponse(path, media_type=_audio_mime(name), filename=name)
+
+
+@app.get("/api/download/{name}")
+async def download_audio(name: str):
+    """下载音频文件。"""
+    if "/" in name or ".." in name:
+        raise HTTPException(400, "非法文件名")
+    path = config.OUTPUT_DIR / name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "音频文件不存在")
+    return FileResponse(
+        path, media_type=_audio_mime(name), filename=name,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.get("/api/history")
+async def get_history():
+    """获取已生成的音频文件历史列表。"""
+    import json
+    if not config.OUTPUT_DIR.exists():
+        return {"history": []}
+
+    audio_extensions = {".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".wav", ".opus"}
+    history_list = []
+
+    # 获取所有文件，按修改时间降序（最新的在最前）
+    try:
+        files = sorted(
+            config.OUTPUT_DIR.iterdir(),
+            key=lambda p: p.stat().st_mtime if p.is_file() else 0,
+            reverse=True
+        )
+    except Exception as e:
+        raise HTTPException(500, f"读取历史失败: {e}")
+
+    for p in files:
+        if not p.is_file() or p.suffix.lower() not in audio_extensions:
+            continue
+
+        # 尝试读取对应的 json 元数据
+        json_path = p.with_suffix(".json")
+        if json_path.exists():
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                history_list.append(data)
+                continue
+            except Exception:
+                pass  # 解析失败则进入 fallback 兜底
+
+        # 兜底解析文件名
+        name = p.name
+        if name.endswith("_zh.mp3"):
+            video_id = name[:-7]
+            mode = "tts"
+        elif "_audio" in name:
+            video_id = name.split("_audio")[0]
+            mode = "audio"
+        else:
+            video_id = p.stem
+            mode = "audio"
+
+        history_list.append({
+            "task_id": "",
+            "mode": mode,
+            "video_id": video_id,
+            "title": video_id,  # 视频 ID 作为标题兜底
+            "uploader": "未知作者",
+            "audio_name": name,
+            "audio_url": f"/audio/{name}",
+        })
+
+    return {"history": history_list}
+
+
+@app.delete("/api/history/{name}")
+async def delete_history_item(name: str):
+    """删除音频文件及其元数据、字幕文件。"""
+    if "/" in name or ".." in name:
+        raise HTTPException(400, "非法文件名")
+
+    audio_path = config.OUTPUT_DIR / name
+    json_path = audio_path.with_suffix(".json")
+
+    deleted_files = []
+    if audio_path.exists() and audio_path.is_file():
+        try:
+            audio_path.unlink()
+            deleted_files.append(name)
+        except Exception as e:
+            raise HTTPException(500, f"删除音频文件失败: {e}")
+
+    if json_path.exists() and json_path.is_file():
+        try:
+            json_path.unlink()
+            deleted_files.append(json_path.name)
+        except Exception:
+            pass  # 元数据删除失败不影响主要流程
+
+    # 清理相关的字幕等临时文件 (如果有)
+    video_id = None
+    if name.endswith("_zh.mp3"):
+        video_id = name[:-7]
+    elif "_audio" in name:
+        video_id = name.split("_audio")[0]
+
+    if video_id:
+        for p in config.OUTPUT_DIR.glob(f"{video_id}.*"):
+            if p.is_file() and p.suffix in (".json3", ".vtt", ".txt"):
+                try:
+                    p.unlink()
+                    deleted_files.append(p.name)
+                except Exception:
+                    pass
+
+    if not deleted_files:
+        raise HTTPException(404, "未找到该音频文件")
+
+    return {"ok": True, "deleted": deleted_files}
+

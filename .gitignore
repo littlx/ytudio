@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+
+# Generated audio
+output/
+
+# Runtime data (cookies etc.)
+data/
+
+# OS
+.DS_Store

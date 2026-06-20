@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ytudio — YouTube → 中文音频</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d27;
+      --card-2: #232733;
+      --border: #2e3342;
+      --text: #e6e8ee;
+      --muted: #9aa0ad;
+      --accent: #ff3b3b;
+      --accent-2: #ff6b6b;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 40px 20px 140px;
+    }
+    h1 {
+      font-size: 26px;
+      margin: 0 0 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h1 .logo {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      width: 36px; height: 36px; border-radius: 9px;
+      display: grid; place-items: center;
+      font-size: 18px;
+    }
+    .subtitle { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    label.field { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    .modes { display: flex; gap: 12px; margin: 18px 0; flex-wrap: wrap; }
+    .mode {
+      flex: 1;
+      min-width: 200px;
+      padding: 16px;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      position: relative;
+    }
+    .mode:hover { border-color: #404656; }
+    .mode.selected { border-color: var(--accent); background: #2a1a1c; }
+    .mode input { position: absolute; opacity: 0; }
+    .mode .m-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .mode .m-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .mode.disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.15s;
+    }
+    button.primary:hover { opacity: 0.92; }
+    button.primary:active { transform: scale(0.99); }
+    button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .progress { display: none; margin-top: 18px; }
+    .progress.active { display: block; }
+    .p-stage { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+    .p-stage .msg { color: var(--text); }
+    .p-stage .pct { color: var(--muted); }
+    .p-bar {
+      height: 8px;
+      background: var(--card-2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .p-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .alert {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+    }
+    .alert.show { display: block; }
+    .alert.err { background: #2a1718; color: var(--err); border: 1px solid #5a2a2c; }
+    .alert.warn { background: #2a2417; color: var(--warn); border: 1px solid #5a4a2a; }
+
+    .player-card { display: none; }
+    .player-card.show { display: block; }
+    .now-playing { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+    .now-playing strong { color: var(--text); }
+    audio { width: 100%; margin-top: 6px; }
+    .p-actions { display: flex; gap: 10px; margin-top: 12px; }
+    .p-actions a {
+      flex: 1; text-align: center; padding: 10px;
+      background: var(--card-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); text-decoration: none; font-size: 13px;
+    }
+    .p-actions a:hover { border-color: var(--accent); }
+
+    .history h2 { font-size: 16px; margin: 24px 0 12px; color: var(--muted); }
+    .h-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 14px;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .h-item:hover { border-color: var(--accent); }
+    .h-item.active { border-color: var(--accent); background: #2a1a1c; }
+    .h-info { flex: 1; min-width: 0; }
+    .h-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .h-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .badge {
+      font-size: 11px; padding: 3px 8px; border-radius: 10px;
+      background: var(--card); border: 1px solid var(--border); color: var(--muted);
+      white-space: nowrap;
+    }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
+    .key-hint { font-size: 12px; color: var(--warn); margin-top: 8px; }
+
+    /* cookies 管理面板 */
+    .panel-toggle {
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none;
+    }
+    .panel-toggle .pt-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .panel-toggle .pt-arrow { color: var(--muted); transition: transform 0.2s; font-size: 12px; }
+    .panel-toggle.open .pt-arrow { transform: rotate(180deg); }
+    .panel-body { display: none; margin-top: 16px; }
+    .panel-body.open { display: block; }
+    .ck-status {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; padding: 3px 10px; border-radius: 10px;
+    }
+    .ck-status.on { background: #13251c; color: var(--ok); border: 1px solid #1f5238; }
+    .ck-status.off { background: var(--card-2); color: var(--muted); border: 1px solid var(--border); }
+    .ck-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    textarea {
+      width: 100%; min-height: 140px; resize: vertical;
+      padding: 12px 14px;
+      background: var(--card-2); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px; line-height: 1.5; outline: none;
+    }
+    textarea:focus { border-color: var(--accent); }
+    .ck-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    button.secondary {
+      padding: 10px 16px; background: var(--card-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+      cursor: pointer; transition: border-color 0.15s;
+    }
+    button.secondary:hover { border-color: var(--accent); }
+    button.danger { color: var(--err); }
+    button.danger:hover { border-color: var(--err); }
+    .ck-msg { font-size: 12px; margin-top: 8px; min-height: 16px; }
+    .ck-msg.ok { color: var(--ok); }
+    .ck-msg.err { color: var(--err); }
+    .guide {
+      margin-top: 16px; padding: 14px 16px;
+      background: var(--card-2); border: 1px solid var(--border); border-radius: 10px;
+      font-size: 12px; line-height: 1.7; color: var(--muted);
+    }
+    .guide summary { cursor: pointer; color: var(--text); font-weight: 600; font-size: 13px; }
+    .guide ol { margin: 10px 0 0; padding-left: 20px; }
+    .guide ol li { margin-bottom: 6px; }
+    .guide code { background: #11131a; padding: 1px 6px; border-radius: 4px; color: var(--accent-2); font-size: 11px; }
+    .guide a { color: var(--accent-2); }
+
+    /* 音色选择面板 */
+    .voice-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;
+    }
+    @media (max-width: 560px) { .voice-grid { grid-template-columns: 1fr; } }
+    .voice-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px;
+      background: var(--card-2); border: 1px solid var(--border); border-radius: 10px;
+      cursor: pointer; transition: all 0.15s; font-size: 13px;
+    }
+    .voice-item:hover { border-color: #404656; }
+    .voice-item.selected { border-color: var(--accent); background: #2a1a1c; }
+    .voice-item .v-radio {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: 2px solid var(--border); flex-shrink: 0; transition: all 0.15s;
+    }
+    .voice-item.selected .v-radio { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--card-2); }
+    .voice-item .v-label { flex: 1; min-width: 0; }
+    .voice-item .v-name { font-weight: 600; }
+    .voice-item .v-gender { font-size: 11px; color: var(--muted); margin-left: 4px; }
+    .voice-preview {
+      flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%;
+      background: var(--card); border: 1px solid var(--border);
+      display: grid; place-items: center; cursor: pointer; color: var(--muted);
+      font-size: 12px;
+    }
+    .voice-preview:hover { border-color: var(--accent); color: var(--accent); }
+    .voice-preview.playing { color: var(--accent); border-color: var(--accent); }
+
+    /* 固定底栏播放器 */
+    .player-bar {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(20, 22, 30, 0.96); backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border);
+      transform: translateY(100%); transition: transform 0.3s ease;
+    }
+    .player-bar.show { transform: translateY(0); }
+    .player-inner {
+      max-width: 760px; margin: 0 auto; padding: 10px 16px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .pb-info { flex: 1; min-width: 0; }
+    .pb-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pb-meta { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pb-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .pb-btn {
+      width: 42px; height: 42px; border-radius: 50%;
+      background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+      display: grid; place-items: center; cursor: pointer; font-size: 16px;
+      transition: all 0.15s;
+    }
+    .pb-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .pb-btn.play { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border: none; width: 50px; height: 50px; font-size: 20px; color: #fff; }
+    .pb-btn.loop.active { color: var(--accent); border-color: var(--accent); }
+    .pb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .pb-progress {
+      max-width: 760px; margin: 0 auto; padding: 0 16px;
+      display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
+    }
+    .pb-seek {
+      flex: 1; height: 4px; background: var(--card-2); border-radius: 2px;
+      cursor: pointer; position: relative; overflow: hidden;
+    }
+    .pb-seek-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); width: 0%; }
+    .pb-seek:hover .pb-seek-fill { background: var(--accent-2); }
+    .pb-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .pb-actions a {
+      padding: 6px 10px; background: var(--card-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); text-decoration: none; font-size: 12px;
+    }
+    .pb-actions a:hover { border-color: var(--accent); }
+    /* 历史项删除按钮 */
+    .h-item .h-delete-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 6px;
+      transition: all 0.15s;
+      opacity: 0.4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .h-item:hover .h-delete-btn {
+      opacity: 1;
+    }
+    .h-item .h-delete-btn:hover {
+      color: var(--err);
+      background: rgba(248, 113, 113, 0.1);
+    }
+    /* 历史项播放指示 */
+    .h-item .h-play-icon { color: var(--accent); font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1><span class="logo">▶</span> ytudio</h1>
+    <p class="subtitle">输入 YouTube 链接，提取音频或把字幕翻译成中文并生成语音，直接在浏览器播放。</p>
+
+    {% if not has_deepseek_key %}
+    <div class="alert warn show">⚠ 未检测到 DEEPSEEK_API_KEY，字幕翻译模式不可用。请在项目根目录创建 .env 填入 key 后重启。</div>
+    {% endif %}
+
+    {% if not has_cookies %}
+    <div class="alert warn show">⚠ 未配置 YouTube cookies。若下载时报「Sign in to confirm you're not a bot」，请在下方「登录 Cookies」面板上传 cookies。</div>
+    {% endif %}
+
+    <div class="card">
+      <div class="panel-toggle" id="ck-toggle">
+        <span class="pt-title">🍪 登录 Cookies
+          <span class="ck-status {{ 'on' if has_cookies else 'off' }}" id="ck-status">
+            <span class="ck-dot"></span><span id="ck-status-text">{{ '已配置' if has_cookies else '未配置' }}</span>
+          </span>
+        </span>
+        <span class="pt-arrow">▼</span>
+      </div>
+      <div class="panel-body" id="ck-body">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">服务器无浏览器时，在此粘贴或上传 <code style="color:var(--accent-2)">cookies.txt</code>（Netscape 格式）。配置后即可绕过 YouTube 机器人检测。</p>
+        <textarea id="ck-textarea" placeholder="# 把 cookies.txt 的全部内容粘贴到这里，或点下方「上传文件」选择文件&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;1234567890&#9;key&#9;value&#10;..."></textarea>
+        <div class="ck-actions">
+          <button class="secondary" id="ck-save">💾 保存</button>
+          <button class="secondary" id="ck-upload-btn">📂 上传文件</button>
+          <input type="file" id="ck-file" accept=".txt,text/plain" style="display:none" />
+          <button class="secondary danger" id="ck-clear">🗑 清除</button>
+        </div>
+        <div class="ck-msg" id="ck-msg"></div>
+
+        <details class="guide">
+          <summary>📋 如何从 Chrome 获取 YouTube cookies（点击展开）</summary>
+          <ol>
+            <li>在 Chrome 登录 <a href="https://www.youtube.com" target="_blank" rel="noopener">youtube.com</a>（确认右上角已是登录状态）。</li>
+            <li>安装浏览器扩展 <b>Get cookies.txt LOCALLY</b>（
+              <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" rel="noopener">Chrome 商店</a>），
+              或任意能导出 Netscape 格式 cookies.txt 的扩展。</li>
+            <li>在 youtube.com 页面点扩展图标 → 选择 <code>Export</code> → 下载 <code>cookies.txt</code>。</li>
+            <li>回到本页，点「上传文件」选择该 cookies.txt；或用文本编辑器打开它，全选复制后粘贴到上方输入框，再点「保存」。</li>
+            <li>状态变为「已配置」即可正常下载。cookies 会保存在服务器 <code>data/cookies.txt</code>，重启不丢失。</li>
+          </ol>
+          <p style="margin:10px 0 0;color:var(--warn);">⚠ cookies 含登录凭证，请勿泄露给他人；用完可在本页点「清除」删除。</p>
+        </details>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-toggle" id="voice-toggle">
+        <span class="pt-title">🎙 语音音色
+          <span class="ck-status on" id="voice-status">
+            <span class="ck-dot"></span><span id="voice-status-text">晓晓</span>
+          </span>
+        </span>
+        <span class="pt-arrow">▼</span>
+      </div>
+      <div class="panel-body" id="voice-body">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 4px;">选择字幕翻译模式生成的中文语音音色（仅 TTS 模式生效）。点 ▶ 可试听。设置自动保存。</p>
+        <div class="voice-grid" id="voice-grid"></div>
+        <audio id="preview-audio" style="display:none"></audio>
+      </div>
+    </div>
+
+    <div class="card">
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" />
+
+      <div class="modes">
+        <label class="mode selected" id="mode-audio">
+          <input type="radio" name="mode" value="audio" checked />
+          <div class="m-title">直接提取音频</div>
+          <div class="m-desc">用 yt-dlp 下载音频，保留原始语音，速度最快。</div>
+        </label>
+        <label class="mode" id="mode-tts">
+          <input type="radio" name="mode" value="tts" />
+          <div class="m-title">字幕翻译 → 中文语音</div>
+          <div class="m-desc">提取字幕，DeepSeek 翻译成通顺中文，edge-tts 合成中文音频。</div>
+        </label>
+      </div>
+
+      <button class="primary" id="btn-start">开始处理</button>
+
+      <div class="progress" id="progress">
+        <div class="p-stage">
+          <span class="msg" id="p-msg">准备中…</span>
+          <span class="pct" id="p-pct">0%</span>
+        </div>
+        <div class="p-bar"><div class="p-fill" id="p-fill"></div></div>
+      </div>
+
+      <div class="alert err" id="alert-err"></div>
+    </div>
+
+    <audio id="audio" style="display:none"></audio>
+
+    <div class="history">
+      <h2>已生成音频历史</h2>
+      <div id="history">
+        <div class="empty">暂无记录。处理完成后会显示在这里。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 固定底栏播放器 -->
+  <div class="player-bar" id="player-bar">
+    <div class="pb-progress">
+      <span id="pb-cur">0:00</span>
+      <div class="pb-seek" id="pb-seek"><div class="pb-seek-fill" id="pb-seek-fill"></div></div>
+      <span id="pb-dur">0:00</span>
+    </div>
+    <div class="player-inner">
+      <div class="pb-info">
+        <div class="pb-title" id="pb-title">—</div>
+        <div class="pb-meta" id="pb-meta"></div>
+      </div>
+      <div class="pb-controls">
+        <button class="pb-btn" id="pb-prev" title="上一首">⏮</button>
+        <button class="pb-btn play" id="pb-play" title="播放/暂停">▶</button>
+        <button class="pb-btn" id="pb-next" title="下一首">⏭</button>
+        <button class="pb-btn loop" id="pb-loop" title="列表循环">🔁</button>
+        <button class="pb-btn speed" id="pb-speed" title="播放速度" style="font-size: 11px; font-weight: 600;">1.0x</button>
+      </div>
+      <div class="pb-actions">
+        <a id="dl-link" href="#" download>⬇</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const HAS_KEY = {{ has_deepseek_key | tojson }};
+    const HAS_COOKIES = {{ has_cookies | tojson }};
+    const DEFAULT_VOICE = {{ default_voice | tojson }};
+    let selectedMode = "audio";
+    let history = [];
+    let currentIndex = -1;          // 当前播放项在 history 中的索引
+    let loopMode = localStorage.getItem("ytudio_loop") === "1";
+    const progressMap = {};          // audio_name -> 播放秒数（记忆进度）
+    let voices = [];
+
+    const $ = (id) => document.getElementById(id);
+    const modeAudio = $("mode-audio"), modeTts = $("mode-tts");
+
+    function selectMode(m) {
+      selectedMode = m;
+      modeAudio.classList.toggle("selected", m === "audio");
+      modeTts.classList.toggle("selected", m === "tts");
+    }
+    modeAudio.addEventListener("click", () => selectMode("audio"));
+    modeTts.addEventListener("click", () => {
+      if (!HAS_KEY) { showErr("字幕翻译模式需要 DEEPSEEK_API_KEY，请先在 .env 配置并重启。"); return; }
+      selectMode("tts");
+    });
+    if (!HAS_KEY) modeTts.classList.add("disabled");
+
+    function showErr(msg) {
+      const el = $("alert-err");
+      el.textContent = "✕ " + msg;
+      el.classList.add("show");
+    }
+    function clearErr() { $("alert-err").classList.remove("show"); }
+
+    function setProgress(pct, msg) {
+      $("p-fill").style.width = pct + "%";
+      $("p-pct").textContent = pct + "%";
+      if (msg) $("p-msg").textContent = msg;
+    }
+
+    const STAGE_LABEL = {
+      fetching: "获取视频信息",
+      downloading: "下载音频",
+      subtitling: "提取字幕",
+      translating: "翻译中",
+      synthesizing: "合成中文语音",
+      done: "完成",
+      error: "出错",
+      pending: "准备中",
+    };
+
+    /* ===== 音色选择 ===== */
+    function getSelectedVoice() {
+      return localStorage.getItem("ytudio_voice") || DEFAULT_VOICE;
+    }
+    async function loadVoices() {
+      try {
+        const resp = await fetch("/api/voices");
+        const data = await resp.json();
+        voices = data.voices;
+        const sel = getSelectedVoice();
+        renderVoices(sel);
+      } catch (e) { console.error("load voices", e); }
+    }
+    function renderVoices(selected) {
+      const grid = $("voice-grid");
+      grid.innerHTML = voices.map(v => `
+        <div class="voice-item ${v.name === selected ? 'selected' : ''}" data-name="${v.name}">
+          <span class="v-radio"></span>
+          <span class="v-label">
+            <span class="v-name">${escapeHtml(v.label)}</span>
+          </span>
+          <span class="voice-preview" data-name="${v.name}" title="试听">▶</span>
+        </div>
+      `).join("");
+      // 更新状态徽章
+      const cur = voices.find(v => v.name === selected);
+      $("voice-status-text").textContent = cur ? cur.label.split(" · ")[0] : selected;
+      // 选中事件
+      grid.querySelectorAll(".voice-item").forEach(el => {
+        el.addEventListener("click", (e) => {
+          if (e.target.classList.contains("voice-preview")) return;
+          const name = el.dataset.name;
+          localStorage.setItem("ytudio_voice", name);
+          renderVoices(name);
+        });
+      });
+      // 试听
+      grid.querySelectorAll(".voice-preview").forEach(el => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          previewVoice(el.dataset.name, el);
+        });
+      });
+    }
+    const previewAudio = () => $("preview-audio");
+    function previewVoice(name, btn) {
+      const pa = previewAudio();
+      if (pa.dataset.name === name && !pa.paused) {
+        pa.pause();
+        btn.classList.remove("playing"); btn.textContent = "▶";
+        return;
+      }
+      document.querySelectorAll(".voice-preview").forEach(b => { b.classList.remove("playing"); b.textContent = "▶"; });
+      pa.src = `/api/voice/preview/${name}`;
+      pa.dataset.name = name;
+      pa.play().catch(() => {});
+      btn.classList.add("playing"); btn.textContent = "❚❚";
+      pa.onended = () => { btn.classList.remove("playing"); btn.textContent = "▶"; };
+    }
+    const voiceToggle = $("voice-toggle"), voiceBody = $("voice-body");
+    voiceToggle.addEventListener("click", () => {
+      const open = voiceBody.classList.toggle("open");
+      voiceToggle.classList.toggle("open", open);
+    });
+    loadVoices();
+    loadHistory();
+
+    /* ===== 处理任务 ===== */
+    $("btn-start").addEventListener("click", async () => {
+      clearErr();
+      const url = $("url").value.trim();
+      if (!url) { showErr("请输入 YouTube 链接"); return; }
+      if (selectedMode === "tts" && !HAS_KEY) {
+        showErr("字幕翻译模式需要 DEEPSEEK_API_KEY，请先在 .env 配置并重启。"); return;
+      }
+
+      const btn = $("btn-start");
+      btn.disabled = true;
+      btn.textContent = "处理中…";
+      $("progress").classList.add("active");
+      setProgress(0, "提交任务…");
+
+      try {
+        const form = new FormData();
+        form.append("url", url);
+        form.append("mode", selectedMode);
+        if (selectedMode === "tts") form.append("voice", getSelectedVoice());
+        const resp = await fetch("/api/process", { method: "POST", body: form });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "请求失败" }));
+          throw new Error(err.detail || "请求失败");
+        }
+        const { task_id } = await resp.json();
+        await subscribe(task_id);
+      } catch (e) {
+        showErr(e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "开始处理";
+      }
+    });
+
+    function subscribe(taskId) {
+      return new Promise((resolve) => {
+        const es = new EventSource(`/api/progress/${taskId}`);
+        es.onmessage = (ev) => {
+          let data;
+          try { data = JSON.parse(ev.data); } catch { return; }
+          if (data.error) {
+            showErr(data.error);
+            $("progress").classList.remove("active");
+            es.close();
+            resolve();
+            return;
+          }
+          if (data.result) {
+            setProgress(100, "完成");
+            const r = data.result;
+            addHistory(r);
+            playIndex(0);  // 新生成的立即播放
+            setTimeout(() => $("progress").classList.remove("active"), 800);
+            es.close();
+            resolve();
+            return;
+          }
+          const label = STAGE_LABEL[data.stage] || data.stage;
+          setProgress(data.percent || 0, `${label} · ${data.message || ""}`);
+        };
+        es.onerror = () => { es.close(); resolve(); };
+      });
+    }
+
+    /* ===== 播放器 ===== */
+    const audio = $("audio");
+    const playerBar = $("player-bar");
+
+    const speeds = [1.0, 1.25, 1.5, 1.75, 2.0];
+    let currentSpeedIndex = 0;
+
+    function fmtTime(s) {
+      if (!s || !isFinite(s)) return "0:00";
+      const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+      return m + ":" + (sec < 10 ? "0" : "") + sec;
+    }
+
+    function playIndex(i) {
+      if (history.length === 0) return;
+      // 循环越界处理
+      if (i < 0) i = loopMode ? history.length - 1 : 0;
+      if (i >= history.length) i = loopMode ? 0 : history.length - 1;
+      currentIndex = i;
+      const r = history[i];
+      // 记忆当前进度（切歌前）
+      saveCurrentProgress();
+      audio.src = r.audio_url;
+      $("pb-title").textContent = r.title;
+      $("pb-meta").textContent = `${r.uploader || ""} · ${r.mode === "tts" ? "中文TTS" : "原音"}`;
+      $("dl-link").href = "/api/download/" + r.audio_name;
+      playerBar.classList.add("show");
+      renderHistory();
+      // 恢复记忆进度
+      const resume = progressMap[r.audio_name] || 0;
+      audio.play().then(() => {
+        if (resume > 1 && resume < (audio.duration || Infinity) - 2) {
+          audio.currentTime = resume;
+        }
+        // 恢复播放速度
+        audio.playbackRate = speeds[currentSpeedIndex];
+        updatePlayBtn(true);
+      }).catch(() => updatePlayBtn(false));
+    }
+
+    function saveCurrentProgress() {
+      if (currentIndex >= 0 && history[currentIndex] && audio.currentTime > 1) {
+        progressMap[history[currentIndex].audio_name] = audio.currentTime;
+      }
+    }
+
+    function updatePlayBtn(playing) {
+      $("pb-play").textContent = playing ? "❚❚" : "▶";
+    }
+
+    $("pb-play").addEventListener("click", () => {
+      if (audio.paused) { audio.play().then(() => updatePlayBtn(true)).catch(() => {}); }
+      else { audio.pause(); updatePlayBtn(false); }
+    });
+    $("pb-prev").addEventListener("click", () => {
+      // 若已播放超过 3 秒，先回到开头
+      if (audio.currentTime > 3) { audio.currentTime = 0; }
+      else { playIndex(currentIndex - 1); }
+    });
+    $("pb-next").addEventListener("click", () => playIndex(currentIndex + 1));
+    $("pb-loop").addEventListener("click", () => {
+      loopMode = !loopMode;
+      localStorage.setItem("ytudio_loop", loopMode ? "1" : "0");
+      $("pb-loop").classList.toggle("active", loopMode);
+    });
+    if (loopMode) $("pb-loop").classList.add("active");
+
+    // 播放速度控制
+    $("pb-speed").addEventListener("click", () => {
+      currentSpeedIndex = (currentSpeedIndex + 1) % speeds.length;
+      const speed = speeds[currentSpeedIndex];
+      $("pb-speed").textContent = speed.toFixed(2).replace(/\.?0+$/, '') + "x";
+      audio.playbackRate = speed;
+    });
+
+    // 音频事件
+    audio.addEventListener("timeupdate", () => {
+      const dur = audio.duration || 0;
+      $("pb-cur").textContent = fmtTime(audio.currentTime);
+      $("pb-dur").textContent = fmtTime(dur);
+      const pct = dur > 0 ? (audio.currentTime / dur * 100) : 0;
+      $("pb-seek-fill").style.width = pct + "%";
+    });
+    audio.addEventListener("ended", () => {
+      saveCurrentProgress();
+      if (currentIndex < history.length - 1) {
+        playIndex(currentIndex + 1);
+      } else if (loopMode) {
+        playIndex(0);
+      } else {
+        updatePlayBtn(false);
+      }
+    });
+    audio.addEventListener("play", () => {
+      audio.playbackRate = speeds[currentSpeedIndex];
+      updatePlayBtn(true);
+    });
+    audio.addEventListener("pause", () => updatePlayBtn(false));
+
+    // 进度条拖动跳转
+    $("pb-seek").addEventListener("click", (e) => {
+      const dur = audio.duration || 0;
+      if (dur <= 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ratio = (e.clientX - rect.left) / rect.width;
+      audio.currentTime = Math.max(0, Math.min(dur, ratio * dur));
+    });
+
+    function addHistory(r) {
+      const idx = history.findIndex(h => h.audio_name === r.audio_name);
+      if (idx >= 0) history.splice(idx, 1);
+      history.unshift(r);
+      renderHistory();
+    }
+
+    function renderHistory() {
+      const box = $("history");
+      if (history.length === 0) {
+        box.innerHTML = '<div class="empty">暂无记录。处理完成后会显示在这里。</div>';
+        return;
+      }
+      box.innerHTML = history.map((r, i) => `
+        <div class="h-item ${i === currentIndex ? 'active' : ''}" data-i="${i}">
+          <span class="h-play-icon">${i === currentIndex ? '▶' : ''}</span>
+          <div class="h-info">
+            <div class="h-title">${escapeHtml(r.title)}</div>
+            <div class="h-meta">${escapeHtml(r.uploader || "")}</div>
+          </div>
+          <span class="badge" style="margin-right: 6px;">${r.mode === "tts" ? "中文TTS" : "原音"}</span>
+          <button class="h-delete-btn" data-i="${i}" title="删除">✕</button>
+        </div>
+      `).join("");
+      box.querySelectorAll(".h-item").forEach(el => {
+        el.addEventListener("click", (e) => {
+          if (e.target.classList.contains("h-delete-btn")) return;
+          playIndex(parseInt(el.dataset.i, 10));
+        });
+      });
+      box.querySelectorAll(".h-delete-btn").forEach(el => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const idx = parseInt(el.dataset.i, 10);
+          deleteHistoryItem(idx);
+        });
+      });
+    }
+
+    async function deleteHistoryItem(idx) {
+      const item = history[idx];
+      if (!item) return;
+      if (!confirm(`确定要删除「${item.title}」吗？`)) return;
+
+      try {
+        const resp = await fetch(`/api/history/${item.audio_name}`, { method: "DELETE" });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "删除失败" }));
+          throw new Error(err.detail || "删除失败");
+        }
+
+        history.splice(idx, 1);
+
+        if (idx === currentIndex) {
+          audio.pause();
+          audio.src = "";
+          currentIndex = -1;
+          playerBar.classList.remove("show");
+        } else if (idx < currentIndex) {
+          currentIndex--;
+        }
+
+        renderHistory();
+      } catch (e) {
+        showErr(e.message);
+      }
+    }
+
+    async function loadHistory() {
+      try {
+        const resp = await fetch("/api/history");
+        const data = await resp.json();
+        history.length = 0;
+        history.push(...data.history);
+        renderHistory();
+      } catch (e) {
+        console.error("加载历史失败", e);
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+    }
+
+    /* ===== cookies 管理面板 ===== */
+    const ckToggle = $("ck-toggle"), ckBody = $("ck-body");
+    ckToggle.addEventListener("click", () => {
+      const open = ckBody.classList.toggle("open");
+      ckToggle.classList.toggle("open", open);
+    });
+
+    function setCookieStatus(on) {
+      const st = $("ck-status"), txt = $("ck-status-text");
+      st.className = "ck-status " + (on ? "on" : "off");
+      txt.textContent = on ? "已配置" : "未配置";
+    }
+    function ckMsg(msg, ok) {
+      const el = $("ck-msg");
+      el.textContent = msg || "";
+      el.className = "ck-msg " + (ok ? "ok" : (msg ? "err" : ""));
+    }
+
+    // 上传文件 → 填入文本框
+    $("ck-upload-btn").addEventListener("click", () => $("ck-file").click());
+    $("ck-file").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => { $("ck-textarea").value = reader.result; ckMsg("已载入文件，点「保存」生效", true); };
+      reader.readAsText(f);
+      e.target.value = "";
+    });
+
+    // 保存
+    $("ck-save").addEventListener("click", async () => {
+      const content = $("ck-textarea").value.trim();
+      if (!content) { ckMsg("请先粘贴或上传 cookies 内容", false); return; }
+      ckMsg("保存中…", true);
+      try {
+        const form = new FormData();
+        form.append("content", content);
+        const resp = await fetch("/api/cookies", { method: "POST", body: form });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || "保存失败");
+        ckMsg("✓ " + data.message, true);
+        setCookieStatus(true);
+        $("ck-textarea").value = "";
+      } catch (e) {
+        ckMsg(e.message, false);
+      }
+    });
+
+    // 清除
+    $("ck-clear").addEventListener("click", async () => {
+      if (!confirm("确定清除已保存的 cookies 吗？")) return;
+      try {
+        const resp = await fetch("/api/cookies", { method: "DELETE" });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error("清除失败");
+        setCookieStatus(data.has_cookies);
+        ckMsg(data.has_cookies ? "已清除页面上传的 cookies（仍有环境变量配置生效）" : "✓ cookies 已清除", true);
+        $("ck-textarea").value = "";
+      } catch (e) {
+        ckMsg(e.message, false);
+      }
+    });
+  </script>
+</body>
+</html>
