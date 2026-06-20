@@ -3,11 +3,11 @@
 // - 已生成的音频与缩略图「请求即缓存」+ LRU 淘汰，支持断网离线播放
 // - 版本号升级时清理旧缓存；新 SW 接管时通知前端刷新
 
-const CACHE_NAME = "ytudio-cache-v2";
+const CACHE_NAME = "ytudio-cache-v3";
 const APP_SHELL = ["/", "/manifest.json", "/icon.jpg"];
 
 // 音频缓存独立分桶，便于单独 LRU 管理；上限 20 条
-const AUDIO_CACHE = "ytudio-audio-v2";
+const AUDIO_CACHE = "ytudio-audio-v3";
 const AUDIO_MAX_ENTRIES = 20;
 
 // SW 安装：预缓存外壳
@@ -51,6 +51,10 @@ self.addEventListener("fetch", (event) => {
   // 非 GET（API 写操作、SSE 进度流）一律直连，不缓存
   if (req.method !== "GET") return;
 
+  // 缓存 key 规范化：剥离 token 查询参数，避免同一资源因 token 不同被重复缓存，
+  // 也避免 token 轮换后旧缓存失效。仅用于音频/缩略图这两个带 token 的资源分支。
+  const cacheKey = new Request(url.pathname, { method: req.method });
+
   // 音频资源：请求即缓存 + 网络优先（首次需下载，离线时回退缓存）
   if (url.pathname.startsWith("/audio/")) {
     event.respondWith(
@@ -59,11 +63,11 @@ self.addEventListener("fetch", (event) => {
         if (resp.status === 200) {
           const clone = resp.clone();
           caches.open(AUDIO_CACHE).then((cache) => {
-            cache.put(req, clone).then(trimAudioCache);
+            cache.put(cacheKey, clone).then(trimAudioCache);
           });
         }
         return resp;
-      }).catch(() => caches.match(req).then((c) => c || Response.error()))
+      }).catch(() => caches.match(cacheKey).then((c) => c || Response.error()))
     );
     return;
   }
@@ -74,10 +78,10 @@ self.addEventListener("fetch", (event) => {
       fetch(req).then((resp) => {
         if (resp.status === 200) {
           const clone = resp.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+          caches.open(CACHE_NAME).then((cache) => cache.put(cacheKey, clone));
         }
         return resp;
-      }).catch(() => caches.match(req).then((c) => c || Response.error()))
+      }).catch(() => caches.match(cacheKey).then((c) => c || Response.error()))
     );
     return;
   }

@@ -61,6 +61,10 @@ COOKIES_FILE: str = os.getenv("COOKIES_FILE", "").strip()
 # 服务器部署无浏览器时，用页面里的 cookies 管理面板上传。
 COOKIES_RUNTIME_FILE: Path = BASE_DIR / "data" / "cookies.txt"
 
+# 历史记录持久化文件（JSON 数组，按 audio_name 去重、最新在前）。
+# 替代每次全量扫描 output/ 目录，提升历史列表读取性能。
+HISTORY_FILE: Path = DATA_DIR / "history.json"
+
 
 def cookies_file_to_use() -> str:
     """返回实际生效的 cookies 文件绝对路径（优先环境变量，其次运行时上传），无则空串。"""

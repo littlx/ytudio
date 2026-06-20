@@ -643,6 +643,22 @@
       showTab(defaultTab);
     }, 50);
 
+    // AUTH_TOKEN 携带：局域网部署时从 URL ?token= 读取并存 localStorage，后续请求统一附加。
+    // 本地回环访问无 token，函数原样返回不附加。fetch 走 Authorization 头（不进 URL/日志），
+    // EventSource / audio / img / a 等无法设自定义头的走 ?token= 查询参数（后端两种都支持）。
+    const TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("ytudio_token");
+    if (TOKEN) localStorage.setItem("ytudio_token", TOKEN);
+    function authUrl(path) {
+      if (!TOKEN) return path;
+      return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+    }
+    function authFetch(path, opts = {}) {
+      if (TOKEN) {
+        opts.headers = { ...(opts.headers || {}), Authorization: "Bearer " + TOKEN };
+      }
+      return fetch(path, opts);
+    }
+
     const HAS_KEY = {{ has_deepseek_key | tojson }};
     const HAS_COOKIES = {{ has_cookies | tojson }};
     const DEFAULT_VOICE = {{ default_voice | tojson }};
@@ -704,7 +720,7 @@
     }
     async function loadVoices() {
       try {
-        const resp = await fetch("/api/voices");
+        const resp = await authFetch("/api/voices");
         const data = await resp.json();
         voices = data.voices;
         const sel = getSelectedVoice();
@@ -759,7 +775,7 @@
         return;
       }
       document.querySelectorAll(".voice-preview").forEach(b => { b.classList.remove("playing"); b.innerHTML = previewPlaySvg; });
-      pa.src = `/api/voice/preview/${name}`;
+      pa.src = authUrl(`/api/voice/preview/${name}`);
       pa.dataset.name = name;
       pa.play().catch(() => {});
       btn.classList.add("playing"); btn.innerHTML = previewPauseSvg;
@@ -804,7 +820,7 @@
         form.append("url", url);
         form.append("mode", selectedMode);
         if (selectedMode === "tts") form.append("voice", getSelectedVoice());
-        const resp = await fetch("/api/process", { method: "POST", body: form });
+        const resp = await authFetch("/api/process", { method: "POST", body: form });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "请求失败" }));
           throw new Error(err.detail || "请求失败");
@@ -825,7 +841,7 @@
     $("p-cancel").addEventListener("click", async () => {
       if (!currentTaskId) return;
       try {
-        await fetch(`/api/cancel/${currentTaskId}`, { method: "POST" });
+        await authFetch(`/api/cancel/${currentTaskId}`, { method: "POST" });
       } catch (e) {}
       if (currentES) { currentES.close(); currentES = null; }
       currentTaskId = null;
@@ -839,7 +855,7 @@
 
     function subscribe(taskId) {
       return new Promise((resolve) => {
-        const es = new EventSource(`/api/progress/${taskId}`);
+        const es = new EventSource(authUrl(`/api/progress/${taskId}`));
         currentES = es;
         es.onmessage = (ev) => {
           let data;
@@ -849,7 +865,7 @@
           if (data.video_id) {
             $("d-title").textContent = data.title || "未知视频";
             $("d-channel").textContent = data.uploader || "未知作者";
-            $("d-thumb").src = `/thumb/${data.video_id}`;
+            $("d-thumb").src = authUrl(`/thumb/${data.video_id}`);
             $("d-thumb").classList.remove("pulse");
           }
 
@@ -897,7 +913,7 @@
         artist: r.uploader || "",
         album: "ytudio",
         artwork: [
-          { src: `/thumb/${r.video_id}`, sizes: "480x360", type: "image/jpeg" },
+          { src: authUrl(`/thumb/${r.video_id}`), sizes: "480x360", type: "image/jpeg" },
           { src: "/icon.jpg", sizes: "512x512", type: "image/jpeg" },
         ],
       });
@@ -944,10 +960,10 @@
       const r = history[i];
       // 记忆当前进度（切歌前）
       saveCurrentProgress();
-      audio.src = r.audio_url;
+      audio.src = authUrl(r.audio_url);
       $("pb-title").textContent = r.title;
       $("pb-meta").textContent = `${r.uploader || ""} · ${r.mode === "tts" ? "中文TTS" : "原音"}`;
-      $("dl-link").href = "/api/download/" + r.audio_name;
+      $("dl-link").href = authUrl("/api/download/" + r.audio_name);
       updateMediaSession(r);
       playerBar.classList.add("show");
       renderHistory();
@@ -1137,7 +1153,7 @@
       txt.textContent = "加载中…";
       overlay.classList.add("show");
       try {
-        const resp = await fetch(`/api/transcript/${videoId}`);
+        const resp = await authFetch(`/api/transcript/${videoId}`);
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "加载失败" }));
           throw new Error(err.detail || "加载失败");
@@ -1159,7 +1175,7 @@
       if (!confirm(`确定要删除「${item.title}」吗？`)) return;
 
       try {
-        const resp = await fetch(`/api/history/${item.audio_name}`, { method: "DELETE" });
+        const resp = await authFetch(`/api/history/${item.audio_name}`, { method: "DELETE" });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "删除失败" }));
           throw new Error(err.detail || "删除失败");
@@ -1184,7 +1200,7 @@
 
     async function loadHistory() {
       try {
-        const resp = await fetch("/api/history");
+        const resp = await authFetch("/api/history");
         const data = await resp.json();
         history.length = 0;
         history.push(...data.history);
@@ -1235,7 +1251,7 @@
       try {
         const form = new FormData();
         form.append("content", content);
-        const resp = await fetch("/api/cookies", { method: "POST", body: form });
+        const resp = await authFetch("/api/cookies", { method: "POST", body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || "保存失败");
         ckMsg("已保存: " + data.message, true);
@@ -1250,7 +1266,7 @@
     $("ck-clear").addEventListener("click", async () => {
       if (!confirm("确定清除已保存的 cookies 吗？")) return;
       try {
-        const resp = await fetch("/api/cookies", { method: "DELETE" });
+        const resp = await authFetch("/api/cookies", { method: "DELETE" });
         const data = await resp.json();
         if (!resp.ok) throw new Error("清除失败");
         setCookieStatus(data.has_cookies);

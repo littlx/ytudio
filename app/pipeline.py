@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -180,8 +181,11 @@ async def run_tts_mode(url: str, state: TaskState, progress: ProgressFn | None, 
 
 
 def _save_metadata(result: TaskResult) -> None:
-    """保存任务的元数据到对应的 JSON 文件。"""
-    import json
+    """保存任务的元数据到对应的 JSON 文件，并更新历史索引。
+
+    - {audio_name}.json：单条元数据（兼容旧版读取逻辑）
+    - data/history.json：集中式历史索引（新版前端读取源）
+    """
     from datetime import datetime, timezone
     meta_path = result.audio_path.with_suffix(".json")
     # 文件大小与生成时间
@@ -206,6 +210,12 @@ def _save_metadata(result: TaskResult) -> None:
         meta_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning("保存元数据失败: %s", e)
+    # 同步更新历史索引（data/history.json）
+    try:
+        from . import history_store
+        history_store.upsert(data)
+    except Exception as e:
+        logger.warning("更新历史索引失败: %s", e)
 
 
 async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None, voice: str = "") -> None:
@@ -231,10 +241,33 @@ async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None
         state.error = "任务已取消"
         state.message = "任务已取消"
         _emit(state, progress)
+        if state.video_id:
+            _cleanup_partial(state.video_id, mode)
         raise
     except Exception as e:  # noqa: BLE001 - 顶层捕获，写入状态供前端展示
         state.stage = "error"
         state.error = str(e)
         state.message = f"处理失败: {e}"
         _emit(state, progress)
+
+
+def _cleanup_partial(video_id: str, mode: str) -> None:
+    """取消任务时清理半成品：TTS 临时片段目录、半成品音频与译文/字幕文件。
+
+    清理失败不影响取消流程（最坏情况是残留文件，下次处理同视频会被覆盖）。
+    """
+    try:
+        # TTS 模式的临时片段目录（与 tts.py 中的命名一致）
+        suffix = "_zh" if mode == MODE_SUBTITLE_TTS else "_audio"
+        tmp_dir = config.OUTPUT_DIR / f".{video_id}{suffix}_tts_parts"
+        if tmp_dir.exists():
+            for p in tmp_dir.iterdir():
+                p.unlink(missing_ok=True)
+            tmp_dir.rmdir(missing_ok=True)
+        # 半成品音频、译文 txt、字幕 json3/vtt（均以 video_id 为前缀落盘）
+        for p in config.OUTPUT_DIR.glob(f"{video_id}*"):
+            if p.is_file():
+                p.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning("清理半成品文件失败: %s", e)
 

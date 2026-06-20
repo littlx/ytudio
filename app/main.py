@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from . import config, pipeline
+from . import config, history_store, pipeline
 from .pipeline import TaskState
 
 # 全局任务表：task_id -> TaskState（含一个进度队列供 SSE 订阅）
@@ -54,7 +55,9 @@ async def verify_token(request: Request) -> None:
     auth = request.headers.get("authorization", "")
     bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
     query_token = request.query_params.get("token", "")
-    if config.AUTH_TOKEN not in (bearer, query_token):
+    # 常量时间比较，避免时序侧信道（虽本地工具风险极低，但部署到局域网时更稳妥）
+    if not (secrets.compare_digest(bearer, config.AUTH_TOKEN)
+            or secrets.compare_digest(query_token, config.AUTH_TOKEN)):
         raise HTTPException(status_code=401, detail="未授权：请提供正确的 token")
 
 
@@ -291,12 +294,15 @@ async def process(
     state = TaskState()
     _tasks[state.task_id] = state
     _queues[state.task_id] = asyncio.Queue()
+    # 捕获当前 event loop：yt-dlp 下载进度 hook 在 worker 线程触发，
+    # 需用 call_soon_threadsafe 把队列写入调度回 loop 线程，避免跨线程操作 asyncio.Queue
+    loop = asyncio.get_running_loop()
 
     def progress(stage: str, percent: int, message: str) -> None:
         state.stage = stage
         state.percent = percent
         state.message = message
-        _put(state.task_id, state)
+        loop.call_soon_threadsafe(_put, state.task_id, state)
 
     # 后台运行任务（voice 仅 TTS 模式生效）
     task = asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice))
@@ -311,7 +317,10 @@ async def process(
             await asyncio.sleep(_TASK_RETAIN_SECONDS)
             _tasks.pop(state.task_id, None)
             _queues.pop(state.task_id, None)
-        asyncio.create_task(_cleanup())
+        cleanup_task = asyncio.create_task(_cleanup())
+        # 清理任务也纳入强引用集合，防止 fire-and-forget 被 GC 中途取消
+        _background_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(lambda ct: _background_tasks.discard(ct))
 
     task.add_done_callback(_on_done)
 
@@ -437,65 +446,8 @@ async def get_transcript(video_id: str, _: None = Depends(verify_token)):
 
 @app.get("/api/history")
 async def get_history(_: None = Depends(verify_token)):
-    """获取已生成的音频文件历史列表。"""
-    import json
-    if not config.OUTPUT_DIR.exists():
-        return {"history": []}
-
-    audio_extensions = {".mp3", ".m4a", ".mp4", ".webm", ".ogg", ".wav", ".opus"}
-    history_list = []
-
-    # 获取所有文件，按修改时间降序（最新的在最前）
-    try:
-        files = sorted(
-            config.OUTPUT_DIR.iterdir(),
-            key=lambda p: p.stat().st_mtime if p.is_file() else 0,
-            reverse=True
-        )
-    except Exception as e:
-        raise HTTPException(500, f"读取历史失败: {e}")
-
-    for p in files:
-        if not p.is_file() or p.suffix.lower() not in audio_extensions:
-            continue
-
-        # 尝试读取对应的 json 元数据
-        json_path = p.with_suffix(".json")
-        if json_path.exists():
-            try:
-                data = json.loads(json_path.read_text(encoding="utf-8"))
-                history_list.append(data)
-                continue
-            except Exception:
-                pass  # 解析失败则进入 fallback 兜底
-
-        # 兜底解析文件名
-        name = p.name
-        if name.endswith("_zh.mp3"):
-            video_id = name[:-7]
-            mode = "tts"
-        elif "_audio" in name:
-            video_id = name.split("_audio")[0]
-            mode = "audio"
-        else:
-            video_id = p.stem
-            mode = "audio"
-
-        history_list.append({
-            "task_id": "",
-            "mode": mode,
-            "video_id": video_id,
-            "title": video_id,  # 视频 ID 作为标题兜底
-            "uploader": "未知作者",
-            "audio_name": name,
-            "audio_url": f"/audio/{name}",
-            "duration": 0,
-            "size": p.stat().st_size if p.is_file() else 0,
-            "source_lang": "",
-            "created_at": "",
-        })
-
-    return {"history": history_list}
+    """获取已生成的音频历史列表（从 data/history.json 读取）。"""
+    return {"history": history_store.load()}
 
 
 @app.delete("/api/history/{name}")
@@ -537,6 +489,9 @@ async def delete_history_item(name: str, _: None = Depends(verify_token)):
                     deleted_files.append(p.name)
                 except Exception:
                     pass
+
+    # 从历史索引中移除记录（即使音频文件已不在，也要清理 history.json）
+    history_store.remove(name)
 
     if not deleted_files:
         raise HTTPException(404, "未找到该音频文件")
