@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yt_dlp
 
@@ -19,6 +19,8 @@ class VideoInfo:
     title: str
     uploader: str
     url: str
+    duration: float = 0.0
+    subtitle_lang: str = "en"  # 字幕翻译模式实际使用的源语言
 
 
 def _ydl_base_opts() -> dict[str, Any]:
@@ -40,27 +42,44 @@ def _ydl_base_opts() -> dict[str, Any]:
     return opts
 
 
-async def fetch_info(url: str) -> VideoInfo:
-    """获取视频元数据（标题、作者、ID）。"""
+async def fetch_info(url: str, download_thumb: bool = True) -> VideoInfo:
+    """获取视频元数据（标题、作者、ID、时长、可用字幕语言）。
+
+    download_thumb=True 时同时下载缩略图到 output/{video_id}.jpg，
+    供前端同源加载（替代 i.ytimg.com 外链，保护隐私并支持离线）。
+    """
     def _extract() -> VideoInfo:
         opts = _ydl_base_opts()
+        if download_thumb:
+            opts["writethumbnail"] = True
+            opts["skip_download"] = True
+            # 缩略图落盘用 video_id 命名，便于 /thumb/{video_id} 定位
+            opts["outtmpl"] = str(config.OUTPUT_DIR / "%(id)s.%(ext)s")
         # process=False：只取元数据，不做格式选择，避免命中 iamf 等异常编码报错
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False, process=False)
+            info = ydl.extract_info(url, download=download_thumb, process=not download_thumb)
+        video_id = info.get("id", "")
         return VideoInfo(
-            video_id=info.get("id", ""),
+            video_id=video_id,
             title=info.get("title", "未知标题"),
             uploader=info.get("uploader") or info.get("channel") or "未知作者",
             url=url,
+            duration=float(info.get("duration") or 0),
+            subtitle_lang=pick_subtitle_lang(info),
         )
 
     return await asyncio.to_thread(_extract)
 
 
-async def extract_audio(url: str, out_path: Path) -> Path:
+async def extract_audio(
+    url: str,
+    out_path: Path,
+    on_progress: "Callable[[float, float], None] | None" = None,
+) -> Path:
     """下载原始音频流，保留原有格式（浏览器原生可播 m4a/webm）。
 
     out_path 不含扩展名；yt-dlp 按实际容器写入 .%(ext)s。
+    on_progress(downloaded_bytes, total_bytes) 回报下载进度（total 为 0 时未知）。
     返回最终生成的文件路径。
     """
     opts = _ydl_base_opts()
@@ -72,6 +91,17 @@ async def extract_audio(url: str, out_path: Path) -> Path:
         # 保留原始格式，不做 FFmpegExtractAudio 转码
     })
 
+    if on_progress is not None:
+        def _hook(d):
+            if d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes") or 0
+                try:
+                    on_progress(float(downloaded), float(total))
+                except Exception:
+                    pass
+        opts["progress_hooks"] = [_hook]
+
     def _run() -> Path:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -81,21 +111,23 @@ async def extract_audio(url: str, out_path: Path) -> Path:
     return await asyncio.to_thread(_run)
 
 
-async def extract_subtitle(url: str, out_dir: Path) -> tuple[str, str]:
-    """提取英语字幕（模式 B 第 1 步）。
+async def extract_subtitle(url: str, out_dir: Path, video_id: str, source_lang: str = "en") -> tuple[str, str]:
+    """提取指定语言的字幕（模式 B 第 1 步）。
 
-    只请求英语字幕（手动 + 自动生成），单语言下载以规避 YouTube 429 限流。
-    后续交由 DeepSeek 翻译整理成中文。
+    单语言下载以规避 YouTube 429 限流。后续交由 DeepSeek 翻译整理成中文。
     返回 (字幕文件路径, 字幕语言)。无字幕时抛出 RuntimeError。
+
+    用已知的 video_id 精确定位落盘文件，而非全局 glob 取最新——
+    避免并发任务互相取到对方的字幕文件。
     """
     opts = _ydl_base_opts()
     opts.update({
         "skip_download": True,
         "writesubtitles": True,        # 手动字幕
         "writeautomaticsub": True,     # 自动生成字幕
-        "subtitleslangs": ["en"],
+        "subtitleslangs": [source_lang, f"{source_lang}-*"],
         "subtitlesformat": "json3",
-        "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+        "outtmpl": str(out_dir / f"{video_id}.%(ext)s"),
     })
 
     def _run() -> None:
@@ -104,15 +136,39 @@ async def extract_subtitle(url: str, out_dir: Path) -> tuple[str, str]:
 
     await asyncio.to_thread(_run)
 
-    # 找到刚下载的英语字幕文件：<id>.en.json3
-    candidates = sorted(out_dir.glob("*.en.json3"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # 精确定位：按 video_id 前缀找该任务自己的字幕文件
+    candidates = sorted(
+        out_dir.glob(f"{video_id}.{source_lang}.*"),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
     if not candidates:
-        # 兜底：任意 en 字幕文件
-        candidates = sorted(out_dir.glob("*.en.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        # 兜底：任意 source_lang 字幕文件
+        candidates = sorted(
+            out_dir.glob(f"{video_id}.*{source_lang}*"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
     if not candidates:
-        raise RuntimeError("该视频没有可用的英语字幕，建议改用「直接提取音频」模式。")
+        raise RuntimeError(
+            f"该视频没有可用的 {source_lang} 字幕，建议改用「直接提取音频」模式。"
+        )
 
-    return str(candidates[0]), "en"
+    return str(candidates[0]), source_lang
+
+
+def pick_subtitle_lang(info: dict) -> str:
+    """从 yt-dlp 元数据选择字幕源语言：优先英语，无则用视频原始语言。"""
+    # 优先英语（覆盖面最广，翻译质量最稳）
+    subs = info.get("subtitles", {}) or {}
+    auto_subs = info.get("automatic_captions", {}) or {}
+    available = set(subs.keys()) | set(auto_subs.keys())
+    if "en" in available:
+        return "en"
+    # 回退到视频原始语言
+    for key in ("language", "default_audio_language"):
+        lang = info.get(key)
+        if lang and lang in available:
+            return lang
+    return "en"
 
 
 def parse_subtitle_to_text(sub_path: str) -> str:
@@ -128,8 +184,8 @@ def parse_subtitle_to_text(sub_path: str) -> str:
 
 def _parse_json3(path: Path) -> str:
     data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-    seen: set[str] = set()
     pieces: list[str] = []
+    prev: str = ""  # 仅去重「相邻」重复（自动字幕常连重复同句），保留合法的跨段重复
     for event in data.get("events", []):
         segs = event.get("segs")
         if not segs:
@@ -138,17 +194,16 @@ def _parse_json3(path: Path) -> str:
         text = _clean_line(text)
         if not text:
             continue
-        # 去重相邻重复（自动字幕常重复同句）
-        if text in seen:
+        if text == prev:
             continue
-        seen.add(text)
+        prev = text
         pieces.append(text)
     return _join_sentences(pieces)
 
 
 def _parse_vtt(content: str) -> str:
     pieces: list[str] = []
-    seen: set[str] = set()
+    prev: str = ""
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line:
@@ -158,9 +213,9 @@ def _parse_vtt(content: str) -> str:
         # 去除 vtt 内联标签 <c>、<00:00:01.000> 等
         line = re.sub(r"<[^>]+>", "", line)
         line = _clean_line(line)
-        if not line or line in seen:
+        if not line or line == prev:
             continue
-        seen.add(line)
+        prev = line
         pieces.append(line)
     return _join_sentences(pieces)
 

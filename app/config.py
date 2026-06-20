@@ -40,8 +40,16 @@ TRANSLATE_CHUNK_SIZE: int = int(os.getenv("TRANSLATE_CHUNK_SIZE", "4000"))
 # 超过此值才退回分批。绝大多数视频（含数小时长演讲）都能整篇翻译。
 WHOLE_TRANSLATE_LIMIT: int = int(os.getenv("WHOLE_TRANSLATE_LIMIT", "800000"))
 
-# 服务端口
+# 服务端口与监听地址
 PORT: int = int(os.getenv("PORT", "8200"))
+# 监听地址：默认仅本地回环。如需手机/局域网访问，设为 0.0.0.0 并务必配置 AUTH_TOKEN，
+# 否则 cookies（含 YouTube 登录凭证）等端点会暴露在局域网。
+HOST: str = os.getenv("HOST", "127.0.0.1").strip()
+
+# 访问令牌：仅当 HOST 非 127.0.0.1 时强校验。客户端需在请求头携带
+# `Authorization: Bearer <token>` 或查询参数 `?token=<token>`。
+# 本地访问（127.0.0.1）无需配置。
+AUTH_TOKEN: str = os.getenv("AUTH_TOKEN", "").strip()
 
 # yt-dlp cookies：从浏览器读取以绕过 YouTube 机器人检测。
 # 值为浏览器名，如 chrome / safari / firefox / edge / brave；留空则不使用。
@@ -69,5 +77,10 @@ REMOTE_COMPONENTS: str = os.getenv("REMOTE_COMPONENTS", "ejs:github").strip()
 
 
 def has_deepseek_key() -> bool:
-    """是否已配置可用的 DeepSeek API Key。"""
-    return bool(DEEPSEEK_API_KEY) and DEEPSEEK_API_KEY != "在此填入你的key"
+    """是否已配置可用的 DeepSeek API Key（非空即视为可用）。"""
+    return bool(DEEPSEEK_API_KEY)
+
+
+def is_local_only() -> bool:
+    """是否仅本地访问（回环地址），决定是否强制鉴权。"""
+    return HOST in ("127.0.0.1", "localhost", "::1")

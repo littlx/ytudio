@@ -105,9 +105,15 @@
 
     .progress { display: none; margin-top: 18px; }
     .progress.active { display: block; }
-    .p-stage { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
-    .p-stage .msg { color: var(--text); }
+    .p-stage { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 8px; gap: 10px; }
+    .p-stage .msg { color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .p-stage .pct { color: var(--muted); }
+    .p-cancel {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 6px; padding: 2px 10px; font-size: 12px; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .p-cancel:hover { border-color: var(--err); color: var(--err); }
     .p-bar {
       height: 8px;
       background: var(--card-2);
@@ -364,12 +370,55 @@
     }
     /* 历史项播放指示 */
     .h-item .h-play-icon { color: var(--accent); font-size: 16px; }
+
+    /* 全局 Toast 通知 */
+    #toast {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-120%);
+      z-index: 200; max-width: 90vw; padding: 12px 18px;
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-size: 13px; line-height: 1.5;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+      transition: transform 0.3s ease, opacity 0.3s ease; opacity: 0;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+    #toast.err { border-color: #5a2a2c; color: var(--err); }
+    #toast.ok { border-color: #1f5238; color: var(--ok); }
+    #toast.warn { border-color: #5a4a2a; color: var(--warn); }
+
+    /* 文稿弹层 */
+    #transcript-overlay {
+      position: fixed; inset: 0; z-index: 300;
+      background: rgba(0,0,0,0.6); display: none;
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    #transcript-overlay.show { display: flex; }
+    #transcript-box {
+      max-width: 640px; width: 100%; max-height: 80vh; overflow-y: auto;
+      background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+      padding: 24px; position: relative;
+    }
+    #transcript-box h3 { margin: 0 0 16px; font-size: 16px; }
+    #transcript-close {
+      position: absolute; top: 14px; right: 14px;
+      background: var(--card-2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--muted); cursor: pointer; padding: 4px 10px; font-size: 13px;
+    }
+    #transcript-close:hover { border-color: var(--accent); color: var(--accent); }
+    #transcript-text { font-size: 14px; line-height: 1.9; color: var(--text); white-space: pre-wrap; }
   </style>
 </head>
 <body>
+  <div id="toast"></div>
+  <div id="transcript-overlay">
+    <div id="transcript-box">
+      <button id="transcript-close">关闭</button>
+      <h3 id="transcript-title">中文文稿</h3>
+      <div id="transcript-text">加载中…</div>
+    </div>
+  </div>
   <div class="wrap">
     <h1><span class="logo"><svg class="icon" style="width: 18px; height: 18px; fill: #fff; margin-left: 2px;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg></span> ytudio</h1>
-    <p class="subtitle">输入 YouTube 链接，提取音频或把字幕翻译成中文并生成语音，直接在浏览器播放。</p>
 
     <!-- TAB 1: 下载与配置视图 -->
     <div id="tab-download" class="tab-content" style="display: none;">
@@ -425,7 +474,7 @@
           <svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V6a3 3 0 016 0v6.75a3 3 0 01-3 3z" /></svg>
           语音音色
           <span class="ck-status on" id="voice-status">
-            <span class="ck-dot"></span><span id="voice-status-text">晓晓</span>
+            <span class="ck-dot"></span><span id="voice-status-text">{{ default_voice_label }}</span>
           </span>
         </span>
         <svg class="icon pt-arrow" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
@@ -470,11 +519,10 @@
         <div class="p-stage">
           <span class="msg" id="p-msg">准备中…</span>
           <span class="pct" id="p-pct">0%</span>
+          <button class="p-cancel" id="p-cancel" title="取消任务">取消</button>
         </div>
         <div class="p-bar"><div class="p-fill" id="p-fill"></div></div>
       </div>
-
-      <div class="alert err" id="alert-err"></div>
     </div>
     </div> <!-- tab-download end -->
 
@@ -529,14 +577,51 @@
   </nav>
 
   <script>
-    // PWA Service Worker 注册
+    // PWA Service Worker 注册 + 更新检测 + 安装提示
+    let _deferredPrompt = null;
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
-          .then(reg => console.log('Service Worker registered', reg))
+          .then(reg => {
+            console.log('Service Worker registered', reg);
+            // 检测到新 SW 等待激活时提示刷新
+            reg.addEventListener('updatefound', () => {
+              const nw = reg.installing;
+              if (!nw) return;
+              nw.addEventListener('statechange', () => {
+                if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                  toast('应用已更新，刷新生效', 'ok');
+                }
+              });
+            });
+          })
           .catch(err => console.error('Service worker registration failed', err));
       });
     }
+
+    // PWA 安装提示
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      _deferredPrompt = e;
+      // 在底栏导航旁显示安装入口
+      const nav = document.querySelector('.nav-bar');
+      if (nav && !document.getElementById('install-btn')) {
+        const btn = document.createElement('button');
+        btn.id = 'install-btn';
+        btn.className = 'nav-item';
+        btn.style.color = 'var(--ok)';
+        btn.innerHTML = '<span class="nav-icon"><svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M12 2.25A9.75 9.75 0 009 21.586c.625.291 1.314.414 2 .414.686 0 1.375-.123 2-.414A9.75 9.75 0 0012 2.25z" /></svg></span><span class="nav-label">安装</span>';
+        btn.addEventListener('click', async () => {
+          if (!_deferredPrompt) return;
+          _deferredPrompt.prompt();
+          const { outcome } = await _deferredPrompt.userChoice;
+          if (outcome === 'accepted') toast('已添加到主屏', 'ok');
+          _deferredPrompt = null;
+          btn.remove();
+        });
+        nav.appendChild(btn);
+      }
+    });
 
     // PWA 页面视图切换 (Tab Switcher)
     function showTab(tabId) {
@@ -551,9 +636,10 @@
     document.querySelectorAll(".nav-item").forEach(el => {
       el.addEventListener("click", () => showTab(el.dataset.tab));
     });
-    // 延迟初始化默认页
+    // 延迟初始化默认页：默认「下载音频」，仅当上次停在播放器且有历史时才恢复
     setTimeout(() => {
-      const defaultTab = localStorage.getItem("ytudio_tab") || "history";
+      const lastTab = localStorage.getItem("ytudio_tab");
+      const defaultTab = lastTab === "history" ? "history" : "download";
       showTab(defaultTab);
     }, 50);
 
@@ -566,6 +652,8 @@
     let loopMode = localStorage.getItem("ytudio_loop") === "1";
     const progressMap = {};          // audio_name -> 播放秒数（记忆进度）
     let voices = [];
+    let currentTaskId = null;        // 当前进行中的任务 ID（供取消）
+    let currentES = null;            // 当前 SSE 连接（供取消时关闭）
 
     const $ = (id) => document.getElementById(id);
     const modeAudio = $("mode-audio"), modeTts = $("mode-tts");
@@ -582,12 +670,16 @@
     });
     if (!HAS_KEY) modeTts.classList.add("disabled");
 
-    function showErr(msg) {
-      const el = $("alert-err");
-      el.textContent = "错误：" + msg;
-      el.classList.add("show");
+    let _toastTimer = null;
+    function toast(msg, type = "err") {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = "show " + type;
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => { el.className = type; }, 3200);
     }
-    function clearErr() { $("alert-err").classList.remove("show"); }
+    function showErr(msg) { toast("错误：" + msg, "err"); }
+    function clearErr() { $("toast").className = ""; }
 
     function setProgress(pct, msg) {
       $("p-fill").style.width = pct + "%";
@@ -718,18 +810,37 @@
           throw new Error(err.detail || "请求失败");
         }
         const { task_id } = await resp.json();
+        currentTaskId = task_id;
         await subscribe(task_id);
       } catch (e) {
         showErr(e.message);
       } finally {
         btn.disabled = false;
         btn.textContent = "开始处理";
+        currentTaskId = null;
       }
+    });
+
+    // 取消任务
+    $("p-cancel").addEventListener("click", async () => {
+      if (!currentTaskId) return;
+      try {
+        await fetch(`/api/cancel/${currentTaskId}`, { method: "POST" });
+      } catch (e) {}
+      if (currentES) { currentES.close(); currentES = null; }
+      currentTaskId = null;
+      $("progress").classList.remove("active");
+      $("download-preview-card").style.display = "none";
+      const btn = $("btn-start");
+      btn.disabled = false;
+      btn.textContent = "开始处理";
+      toast("已取消任务", "warn");
     });
 
     function subscribe(taskId) {
       return new Promise((resolve) => {
         const es = new EventSource(`/api/progress/${taskId}`);
+        currentES = es;
         es.onmessage = (ev) => {
           let data;
           try { data = JSON.parse(ev.data); } catch { return; }
@@ -738,7 +849,7 @@
           if (data.video_id) {
             $("d-title").textContent = data.title || "未知视频";
             $("d-channel").textContent = data.uploader || "未知作者";
-            $("d-thumb").src = `https://i.ytimg.com/vi/${data.video_id}/hqdefault.jpg`;
+            $("d-thumb").src = `/thumb/${data.video_id}`;
             $("d-thumb").classList.remove("pulse");
           }
 
@@ -746,6 +857,7 @@
             showErr(data.error);
             $("progress").classList.remove("active");
             $("download-preview-card").style.display = "none";
+            currentES = null;
             es.close();
             resolve();
             return;
@@ -755,30 +867,52 @@
             const r = data.result;
             addHistory(r);
             playIndex(0);  // 新生成的立即播放
-
-            // 自动跳转到“播放器”页面，方便用户播放
-            setTimeout(() => {
-              showTab("history");
-            }, 1000);
-
+            currentES = null;
+            es.close();
+            toast("处理完成，已开始播放", "ok");
+            // 不再强制跳转：用户可能想继续处理下一个；播放器底栏已显示
             setTimeout(() => {
               $("progress").classList.remove("active");
               $("download-preview-card").style.display = "none";
             }, 1500);
-            es.close();
             resolve();
             return;
           }
           const label = STAGE_LABEL[data.stage] || data.stage;
           setProgress(data.percent || 0, `${label} · ${data.message || ""}`);
         };
-        es.onerror = () => { es.close(); resolve(); };
+        es.onerror = () => { currentES = null; es.close(); resolve(); };
       });
     }
 
     /* ===== 播放器 ===== */
     const audio = $("audio");
     const playerBar = $("player-bar");
+
+    // ===== Media Session API：锁屏/耳机/车载控制 =====
+    function updateMediaSession(r) {
+      if (!("mediaSession" in navigator)) return;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: r.title || "未知",
+        artist: r.uploader || "",
+        album: "ytudio",
+        artwork: [
+          { src: `/thumb/${r.video_id}`, sizes: "480x360", type: "image/jpeg" },
+          { src: "/icon.jpg", sizes: "512x512", type: "image/jpeg" },
+        ],
+      });
+    }
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.setActionHandler("play", () => audio.play());
+      navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+      navigator.mediaSession.setActionHandler("previoustrack", () => playIndex(currentIndex - 1));
+      navigator.mediaSession.setActionHandler("nexttrack", () => playIndex(currentIndex + 1));
+      try {
+        navigator.mediaSession.setActionHandler("seekto", (d) => {
+          if (d.seekTime != null) audio.currentTime = d.seekTime;
+        });
+      } catch (e) {}
+    }
 
     const speeds = [1.0, 1.25, 1.5, 1.75, 2.0];
     let currentSpeedIndex = 0;
@@ -787,6 +921,18 @@
       if (!s || !isFinite(s)) return "0:00";
       const m = Math.floor(s / 60), sec = Math.floor(s % 60);
       return m + ":" + (sec < 10 ? "0" : "") + sec;
+    }
+    function fmtDuration(sec) {
+      if (!sec) return "";
+      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60);
+      if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${m}:${String(s).padStart(2,'0')}`;
+    }
+    function fmtSize(bytes) {
+      if (!bytes) return "";
+      if (bytes < 1024) return bytes + "B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + "KB";
+      return (bytes / 1024 / 1024).toFixed(1) + "MB";
     }
 
     function playIndex(i) {
@@ -802,6 +948,7 @@
       $("pb-title").textContent = r.title;
       $("pb-meta").textContent = `${r.uploader || ""} · ${r.mode === "tts" ? "中文TTS" : "原音"}`;
       $("dl-link").href = "/api/download/" + r.audio_name;
+      updateMediaSession(r);
       playerBar.classList.add("show");
       renderHistory();
       // 恢复记忆进度
@@ -876,8 +1023,12 @@
     audio.addEventListener("play", () => {
       audio.playbackRate = speeds[currentSpeedIndex];
       updatePlayBtn(true);
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
     });
-    audio.addEventListener("pause", () => updatePlayBtn(false));
+    audio.addEventListener("pause", () => {
+      updatePlayBtn(false);
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    });
 
     // 进度条拖动跳转
     $("pb-seek").addEventListener("click", (e) => {
@@ -886,6 +1037,42 @@
       const rect = e.currentTarget.getBoundingClientRect();
       const ratio = (e.clientX - rect.left) / rect.width;
       audio.currentTime = Math.max(0, Math.min(dur, ratio * dur));
+    });
+
+    // 键盘快捷键：空格播放/暂停、←/→ 快退快进 10s、↑/↓ 上下首、L 循环
+    document.addEventListener("keydown", (e) => {
+      // 输入框聚焦时不拦截
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+      // 文稿弹层打开时仅响应 Esc
+      if ($("transcript-overlay").classList.contains("show")) {
+        if (e.key === "Escape") $("transcript-overlay").classList.remove("show");
+        return;
+      }
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          if (audio.src) { audio.paused ? audio.play().catch(()=>{}) : audio.pause(); }
+          break;
+        case "ArrowLeft":
+          if (audio.src) audio.currentTime = Math.max(0, audio.currentTime - 10);
+          break;
+        case "ArrowRight":
+          if (audio.src) audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 10);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          if (history.length) playIndex(currentIndex - 1);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          if (history.length) playIndex(currentIndex + 1);
+          break;
+        case "l":
+        case "L":
+          $("pb-loop").click();
+          break;
+      }
     });
 
     function addHistory(r) {
@@ -903,32 +1090,68 @@
       }
       const itemPlaySvg = `<svg class="icon" style="width: 14px; height: 14px; fill: var(--accent); margin-right: 6px;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg>`;
       const itemTrashSvg = `<svg class="icon" style="width: 14px; height: 14px;" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>`;
+      const itemDocSvg = `<svg class="icon" style="width: 14px; height: 14px;" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>`;
 
-      box.innerHTML = history.map((r, i) => `
+      box.innerHTML = history.map((r, i) => {
+        const metaParts = [escapeHtml(r.uploader || "")];
+        if (r.duration) metaParts.push(fmtDuration(r.duration));
+        if (r.size) metaParts.push(fmtSize(r.size));
+        const showDoc = r.mode === "tts" && r.video_id;
+        return `
         <div class="h-item ${i === currentIndex ? 'active' : ''}" data-i="${i}">
           <span class="h-play-icon">${i === currentIndex ? itemPlaySvg : ''}</span>
           <div class="h-info">
             <div class="h-title">${escapeHtml(r.title)}</div>
-            <div class="h-meta">${escapeHtml(r.uploader || "")}</div>
+            <div class="h-meta">${metaParts.filter(Boolean).join(" · ")}</div>
           </div>
+          ${showDoc ? `<button class="h-delete-btn h-doc-btn" data-vid="${escapeHtml(r.video_id)}" title="查看文稿" style="opacity:0.6">${itemDocSvg}</button>` : ''}
           <span class="badge" style="margin-right: 6px;">${r.mode === "tts" ? "中文TTS" : "原音"}</span>
           <button class="h-delete-btn" data-i="${i}" title="删除">${itemTrashSvg}</button>
-        </div>
-      `).join("");
+        </div>`;
+      }).join("");
       box.querySelectorAll(".h-item").forEach(el => {
         el.addEventListener("click", (e) => {
-          if (e.target.classList.contains("h-delete-btn")) return;
+          if (e.target.closest(".h-delete-btn")) return;
           playIndex(parseInt(el.dataset.i, 10));
         });
       });
-      box.querySelectorAll(".h-delete-btn").forEach(el => {
+      box.querySelectorAll(".h-delete-btn[data-i]").forEach(el => {
         el.addEventListener("click", (e) => {
           e.stopPropagation();
           const idx = parseInt(el.dataset.i, 10);
           deleteHistoryItem(idx);
         });
       });
+      box.querySelectorAll(".h-doc-btn").forEach(el => {
+        el.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await showTranscript(el.dataset.vid);
+        });
+      });
     }
+
+    async function showTranscript(videoId) {
+      const overlay = $("transcript-overlay");
+      const txt = $("transcript-text");
+      $("transcript-title").textContent = "中文文稿";
+      txt.textContent = "加载中…";
+      overlay.classList.add("show");
+      try {
+        const resp = await fetch(`/api/transcript/${videoId}`);
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "加载失败" }));
+          throw new Error(err.detail || "加载失败");
+        }
+        const data = await resp.json();
+        txt.textContent = data.transcript || "（文稿为空）";
+      } catch (e) {
+        txt.textContent = "加载失败：" + e.message;
+      }
+    }
+    $("transcript-close").addEventListener("click", () => $("transcript-overlay").classList.remove("show"));
+    $("transcript-overlay").addEventListener("click", (e) => {
+      if (e.target.id === "transcript-overlay") e.currentTarget.classList.remove("show");
+    });
 
     async function deleteHistoryItem(idx) {
       const item = history[idx];
@@ -1031,7 +1254,7 @@
         const data = await resp.json();
         if (!resp.ok) throw new Error("清除失败");
         setCookieStatus(data.has_cookies);
-        ckMsg(data.has_cookies ? "已清除页面上传 of cookies（仍有环境变量配置生效）" : "成功：cookies 已清除", true);
+        ckMsg(data.has_cookies ? "已清除页面上传的 cookies（环境变量配置仍生效）" : "成功：cookies 已清除", true);
         $("ck-textarea").value = "";
       } catch (e) {
         ckMsg(e.message, false);
