@@ -47,6 +47,25 @@ async def index(request: Request):
     )
 
 
+@app.get("/manifest.json")
+async def get_manifest():
+    return FileResponse(config.TEMPLATES_DIR / "manifest.json", media_type="application/json")
+
+
+@app.get("/sw.js")
+async def get_sw():
+    return FileResponse(
+        config.TEMPLATES_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/"},
+    )
+
+
+@app.get("/icon.jpg")
+async def get_icon():
+    return FileResponse(config.TEMPLATES_DIR / "icon.jpg", media_type="image/jpeg")
+
+
 @app.get("/api/status")
 async def api_status():
     return {
@@ -179,6 +198,9 @@ def _put(task_id: str, state: TaskState) -> None:
             "message": state.message,
             "error": state.error,
             "done": state.stage in ("done", "error"),
+            "video_id": state.video_id,
+            "title": state.title,
+            "uploader": state.uploader,
         })
 
 
@@ -227,7 +249,7 @@ async def progress_stream(task_id: str):
 
     async def event_generator():
         # 先补发当前状态
-        yield f"data: {json.dumps({'stage': state.stage, 'percent': state.percent, 'message': state.message, 'error': state.error, 'done': state.stage in ('done', 'error')})}\n\n"
+        yield f"data: {json.dumps({'stage': state.stage, 'percent': state.percent, 'message': state.message, 'error': state.error, 'done': state.stage in ('done', 'error'), 'video_id': state.video_id, 'title': state.title, 'uploader': state.uploader})}\n\n"
         try:
             while True:
                 try:

@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ytudio — YouTube → 中文音频</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0f1117" />
+  <link rel="apple-touch-icon" href="/icon.jpg" />
   <style>
     :root {
       --bg: #0f1117;
@@ -30,7 +33,7 @@
     .wrap {
       max-width: 760px;
       margin: 0 auto;
-      padding: 40px 20px 140px;
+      padding: 40px 20px 180px;
     }
     h1 {
       font-size: 26px;
@@ -245,12 +248,48 @@
 
     /* 固定底栏播放器 */
     .player-bar {
-      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      position: fixed; bottom: 60px; left: 0; right: 0; z-index: 100;
       background: rgba(20, 22, 30, 0.96); backdrop-filter: blur(12px);
       border-top: 1px solid var(--border);
-      transform: translateY(100%); transition: transform 0.3s ease;
+      transform: translateY(calc(100% + 60px)); transition: transform 0.3s ease;
     }
     .player-bar.show { transform: translateY(0); }
+
+    /* PWA 底部导航栏 */
+    .nav-bar {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 60px; z-index: 110;
+      background: rgba(15, 17, 23, 0.96); backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-around; align-items: center;
+    }
+    .nav-item {
+      background: none; border: none; color: var(--muted);
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      cursor: pointer; padding: 6px 12px; font-size: 11px; font-weight: 500;
+      transition: all 0.15s;
+      width: 50%;
+    }
+    .nav-item.active { color: var(--accent-2); }
+    .nav-item .nav-icon { font-size: 20px; }
+
+    /* 视图切换 */
+    .tab-content {
+      animation: fadeIn 0.3s ease-in-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 脉冲动画 */
+    .pulse {
+      animation: pulse 1.5s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.6; }
+      50% { opacity: 1; }
+      100% { opacity: 0.6; }
+    }
     .player-inner {
       max-width: 760px; margin: 0 auto; padding: 10px 16px;
       display: flex; align-items: center; gap: 14px;
@@ -285,6 +324,22 @@
       border-radius: 8px; color: var(--text); text-decoration: none; font-size: 12px;
     }
     .pb-actions a:hover { border-color: var(--accent); }
+
+    /* Heroicons 通用样式 */
+    .icon {
+      width: 1.25em;
+      height: 1.25em;
+      display: inline-block;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+    .alert-icon {
+      margin-right: 8px;
+      width: 1.4em;
+      height: 1.4em;
+      vertical-align: -0.25em;
+    }
+
     /* 历史项删除按钮 */
     .h-item .h-delete-btn {
       background: transparent;
@@ -313,39 +368,43 @@
 </head>
 <body>
   <div class="wrap">
-    <h1><span class="logo">▶</span> ytudio</h1>
+    <h1><span class="logo"><svg class="icon" style="width: 18px; height: 18px; fill: #fff; margin-left: 2px;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg></span> ytudio</h1>
     <p class="subtitle">输入 YouTube 链接，提取音频或把字幕翻译成中文并生成语音，直接在浏览器播放。</p>
 
-    {% if not has_deepseek_key %}
-    <div class="alert warn show">⚠ 未检测到 DEEPSEEK_API_KEY，字幕翻译模式不可用。请在项目根目录创建 .env 填入 key 后重启。</div>
-    {% endif %}
+    <!-- TAB 1: 下载与配置视图 -->
+    <div id="tab-download" class="tab-content" style="display: none;">
+      {% if not has_deepseek_key %}
+      <div class="alert warn show"><svg class="icon alert-icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>未检测到 DEEPSEEK_API_KEY，字幕翻译模式不可用。请在项目根目录创建 .env 填入 key 后重启。</div>
+      {% endif %}
 
-    {% if not has_cookies %}
-    <div class="alert warn show">⚠ 未配置 YouTube cookies。若下载时报「Sign in to confirm you're not a bot」，请在下方「登录 Cookies」面板上传 cookies。</div>
-    {% endif %}
+      {% if not has_cookies %}
+      <div class="alert warn show"><svg class="icon alert-icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>未配置 YouTube cookies。若下载时报「Sign in to confirm you're not a bot」，请在下方「登录 Cookies」面板上传 cookies。</div>
+      {% endif %}
 
-    <div class="card">
+      <div class="card">
       <div class="panel-toggle" id="ck-toggle">
-        <span class="pt-title">🍪 登录 Cookies
+        <span class="pt-title">
+          <svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
+          登录 Cookies
           <span class="ck-status {{ 'on' if has_cookies else 'off' }}" id="ck-status">
             <span class="ck-dot"></span><span id="ck-status-text">{{ '已配置' if has_cookies else '未配置' }}</span>
           </span>
         </span>
-        <span class="pt-arrow">▼</span>
+        <svg class="icon pt-arrow" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
       </div>
       <div class="panel-body" id="ck-body">
         <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">服务器无浏览器时，在此粘贴或上传 <code style="color:var(--accent-2)">cookies.txt</code>（Netscape 格式）。配置后即可绕过 YouTube 机器人检测。</p>
         <textarea id="ck-textarea" placeholder="# 把 cookies.txt 的全部内容粘贴到这里，或点下方「上传文件」选择文件&#10;.youtube.com&#9;TRUE&#9;/&#9;TRUE&#9;1234567890&#9;key&#9;value&#10;..."></textarea>
         <div class="ck-actions">
-          <button class="secondary" id="ck-save">💾 保存</button>
-          <button class="secondary" id="ck-upload-btn">📂 上传文件</button>
+          <button class="secondary" id="ck-save"><svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>保存</button>
+          <button class="secondary" id="ck-upload-btn"><svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" /></svg>上传文件</button>
           <input type="file" id="ck-file" accept=".txt,text/plain" style="display:none" />
-          <button class="secondary danger" id="ck-clear">🗑 清除</button>
+          <button class="secondary danger" id="ck-clear"><svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>清除</button>
         </div>
         <div class="ck-msg" id="ck-msg"></div>
 
         <details class="guide">
-          <summary>📋 如何从 Chrome 获取 YouTube cookies（点击展开）</summary>
+          <summary><svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 111.063.852l-.708 2.836a.75.75 0 001.063.852l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" /></svg>如何从 Chrome 获取 YouTube cookies（点击展开）</summary>
           <ol>
             <li>在 Chrome 登录 <a href="https://www.youtube.com" target="_blank" rel="noopener">youtube.com</a>（确认右上角已是登录状态）。</li>
             <li>安装浏览器扩展 <b>Get cookies.txt LOCALLY</b>（
@@ -355,22 +414,24 @@
             <li>回到本页，点「上传文件」选择该 cookies.txt；或用文本编辑器打开它，全选复制后粘贴到上方输入框，再点「保存」。</li>
             <li>状态变为「已配置」即可正常下载。cookies 会保存在服务器 <code>data/cookies.txt</code>，重启不丢失。</li>
           </ol>
-          <p style="margin:10px 0 0;color:var(--warn);">⚠ cookies 含登录凭证，请勿泄露给他人；用完可在本页点「清除」删除。</p>
+          <p style="margin:10px 0 0;color:var(--warn);"><svg class="icon" style="margin-right: 6px; color: var(--warn);" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>cookies 含登录凭证，请勿泄露给他人；用完可在本页点「清除」删除。</p>
         </details>
       </div>
     </div>
 
     <div class="card">
       <div class="panel-toggle" id="voice-toggle">
-        <span class="pt-title">🎙 语音音色
+        <span class="pt-title">
+          <svg class="icon" style="margin-right: 6px;" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V6a3 3 0 016 0v6.75a3 3 0 01-3 3z" /></svg>
+          语音音色
           <span class="ck-status on" id="voice-status">
             <span class="ck-dot"></span><span id="voice-status-text">晓晓</span>
           </span>
         </span>
-        <span class="pt-arrow">▼</span>
+        <svg class="icon pt-arrow" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
       </div>
       <div class="panel-body" id="voice-body">
-        <p style="font-size:12px;color:var(--muted);margin:0 0 4px;">选择字幕翻译模式生成的中文语音音色（仅 TTS 模式生效）。点 ▶ 可试听。设置自动保存。</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 4px;">选择字幕翻译模式生成的中文语音音色（仅 TTS 模式生效）。点击播放图标可试听。设置自动保存。</p>
         <div class="voice-grid" id="voice-grid"></div>
         <audio id="preview-audio" style="display:none"></audio>
       </div>
@@ -394,6 +455,17 @@
 
       <button class="primary" id="btn-start">开始处理</button>
 
+      <!-- PWA 下载时元信息展示卡片 -->
+      <div class="download-preview-card" id="download-preview-card" style="display: none; margin-top: 18px; padding: 14px; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px; animation: fadeIn 0.3s ease;">
+        <div class="d-meta-layout" style="display: flex; gap: 14px; align-items: center;">
+          <img class="d-thumb" id="d-thumb" src="/icon.jpg" style="width: 120px; height: 68px; object-fit: cover; border-radius: 8px; background: var(--card); border: 1px solid var(--border); transition: all 0.3s;" />
+          <div class="d-info" style="flex: 1; min-width: 0;">
+            <div class="d-title" id="d-title" style="font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--text); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">正在解析视频信息…</div>
+            <div class="d-channel" id="d-channel" style="font-size: 12px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">—</div>
+          </div>
+        </div>
+      </div>
+
       <div class="progress" id="progress">
         <div class="p-stage">
           <span class="msg" id="p-msg">准备中…</span>
@@ -404,15 +476,19 @@
 
       <div class="alert err" id="alert-err"></div>
     </div>
+    </div> <!-- tab-download end -->
 
-    <audio id="audio" style="display:none"></audio>
-
-    <div class="history">
-      <h2>已生成音频历史</h2>
-      <div id="history">
-        <div class="empty">暂无记录。处理完成后会显示在这里。</div>
+    <!-- TAB 2: 播放与历史视图 -->
+    <div id="tab-history" class="tab-content">
+      <div class="history">
+        <h2>播放列表</h2>
+        <div id="history">
+          <div class="empty">暂无记录。处理完成后会显示在这里。</div>
+        </div>
       </div>
     </div>
+
+    <audio id="audio" style="display:none"></audio>
   </div>
 
   <!-- 固定底栏播放器 -->
@@ -428,19 +504,59 @@
         <div class="pb-meta" id="pb-meta"></div>
       </div>
       <div class="pb-controls">
-        <button class="pb-btn" id="pb-prev" title="上一首">⏮</button>
-        <button class="pb-btn play" id="pb-play" title="播放/暂停">▶</button>
-        <button class="pb-btn" id="pb-next" title="下一首">⏭</button>
-        <button class="pb-btn loop" id="pb-loop" title="列表循环">🔁</button>
+        <button class="pb-btn" id="pb-prev" title="上一首"><svg class="icon" fill="currentColor" viewBox="0 0 24 24"><path d="M9.195 18.44c1.25.713 2.805-.19 2.805-1.629v-2.34l6.945 3.968c1.25.714 2.805-.188 2.805-1.628V5.54c0-1.44-1.555-2.342-2.805-1.628L12 7.88v-2.34c0-1.44-1.555-2.343-2.805-1.629l-7.108 4.062c-1.26.72-1.26 2.536 0 3.256l7.108 4.061z" /></svg></button>
+        <button class="pb-btn play" id="pb-play" title="播放/暂停"><svg class="icon" style="margin-left: 2px;" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg></button>
+        <button class="pb-btn" id="pb-next" title="下一首"><svg class="icon" fill="currentColor" viewBox="0 0 24 24"><path d="M5.055 7.06c-1.25-.714-2.805.189-2.805 1.628v8.123c0 1.44 1.555 2.342 2.805 1.628L12 14.47v2.34c0 1.44 1.555 2.343 2.805 1.629l7.108-4.062c1.26-.72 1.26-2.536 0-3.256l-7.108-4.061C13.555 6.338 12 7.24 12 8.68v2.34L5.055 7.06z" /></svg></button>
+        <button class="pb-btn loop" id="pb-loop" title="列表循环"><svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg></button>
         <button class="pb-btn speed" id="pb-speed" title="播放速度" style="font-size: 11px; font-weight: 600;">1.0x</button>
       </div>
       <div class="pb-actions">
-        <a id="dl-link" href="#" download>⬇</a>
+        <a id="dl-link" href="#" download><svg class="icon" style="width: 18px; height: 18px;" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg></a>
       </div>
     </div>
   </div>
 
+  <!-- PWA 底部导航栏 -->
+  <nav class="nav-bar">
+    <button class="nav-item" data-tab="download" id="nav-btn-download">
+      <span class="nav-icon"><svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg></span>
+      <span class="nav-label">下载音频</span>
+    </button>
+    <button class="nav-item active" data-tab="history" id="nav-btn-history">
+      <span class="nav-icon"><svg class="icon" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15.91 11.672a.375.375 0 0 1 0 .656l-5.603 3.113a.375.375 0 0 1-.557-.328V9.887c0-.286.307-.466.557-.327l5.603 3.112z" /></svg></span>
+      <span class="nav-label">播放器</span>
+    </button>
+  </nav>
+
   <script>
+    // PWA Service Worker 注册
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('Service Worker registered', reg))
+          .catch(err => console.error('Service worker registration failed', err));
+      });
+    }
+
+    // PWA 页面视图切换 (Tab Switcher)
+    function showTab(tabId) {
+      document.querySelectorAll(".tab-content").forEach(el => {
+        el.style.display = el.id === `tab-${tabId}` ? "block" : "none";
+      });
+      document.querySelectorAll(".nav-item").forEach(el => {
+        el.classList.toggle("active", el.dataset.tab === tabId);
+      });
+      localStorage.setItem("ytudio_tab", tabId);
+    }
+    document.querySelectorAll(".nav-item").forEach(el => {
+      el.addEventListener("click", () => showTab(el.dataset.tab));
+    });
+    // 延迟初始化默认页
+    setTimeout(() => {
+      const defaultTab = localStorage.getItem("ytudio_tab") || "history";
+      showTab(defaultTab);
+    }, 50);
+
     const HAS_KEY = {{ has_deepseek_key | tojson }};
     const HAS_COOKIES = {{ has_cookies | tojson }};
     const DEFAULT_VOICE = {{ default_voice | tojson }};
@@ -468,7 +584,7 @@
 
     function showErr(msg) {
       const el = $("alert-err");
-      el.textContent = "✕ " + msg;
+      el.textContent = "错误：" + msg;
       el.classList.add("show");
     }
     function clearErr() { $("alert-err").classList.remove("show"); }
@@ -503,17 +619,25 @@
         renderVoices(sel);
       } catch (e) { console.error("load voices", e); }
     }
+    // 音色预览 SVG 定义
+    const previewPlaySvg = `<svg class="icon" style="width: 14px; height: 14px; fill: currentColor;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg>`;
+    const previewPauseSvg = `<svg class="icon" style="width: 14px; height: 14px; fill: currentColor;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M6.75 5.25a.75.75 0 0 1 .75-.75H9a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H7.5a.75.75 0 0 1-.75-.75V5.25zm7.5 0A.75.75 0 0 1 15 4.5h1.5a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H15a.75.75 0 0 1-.75-.75V5.25z" clip-rule="evenodd" /></svg>`;
+
     function renderVoices(selected) {
       const grid = $("voice-grid");
-      grid.innerHTML = voices.map(v => `
-        <div class="voice-item ${v.name === selected ? 'selected' : ''}" data-name="${v.name}">
-          <span class="v-radio"></span>
-          <span class="v-label">
-            <span class="v-name">${escapeHtml(v.label)}</span>
-          </span>
-          <span class="voice-preview" data-name="${v.name}" title="试听">▶</span>
-        </div>
-      `).join("");
+      const pa = previewAudio();
+      grid.innerHTML = voices.map(v => {
+        const isPlaying = pa.dataset.name === v.name && !pa.paused;
+        return `
+          <div class="voice-item ${v.name === selected ? 'selected' : ''}" data-name="${v.name}">
+            <span class="v-radio"></span>
+            <span class="v-label">
+              <span class="v-name">${escapeHtml(v.label)}</span>
+            </span>
+            <span class="voice-preview" data-name="${v.name}" title="试听">${isPlaying ? previewPauseSvg : previewPlaySvg}</span>
+          </div>
+        `;
+      }).join("");
       // 更新状态徽章
       const cur = voices.find(v => v.name === selected);
       $("voice-status-text").textContent = cur ? cur.label.split(" · ")[0] : selected;
@@ -539,15 +663,15 @@
       const pa = previewAudio();
       if (pa.dataset.name === name && !pa.paused) {
         pa.pause();
-        btn.classList.remove("playing"); btn.textContent = "▶";
+        btn.classList.remove("playing"); btn.innerHTML = previewPlaySvg;
         return;
       }
-      document.querySelectorAll(".voice-preview").forEach(b => { b.classList.remove("playing"); b.textContent = "▶"; });
+      document.querySelectorAll(".voice-preview").forEach(b => { b.classList.remove("playing"); b.innerHTML = previewPlaySvg; });
       pa.src = `/api/voice/preview/${name}`;
       pa.dataset.name = name;
       pa.play().catch(() => {});
-      btn.classList.add("playing"); btn.textContent = "❚❚";
-      pa.onended = () => { btn.classList.remove("playing"); btn.textContent = "▶"; };
+      btn.classList.add("playing"); btn.innerHTML = previewPauseSvg;
+      pa.onended = () => { btn.classList.remove("playing"); btn.innerHTML = previewPlaySvg; };
     }
     const voiceToggle = $("voice-toggle"), voiceBody = $("voice-body");
     voiceToggle.addEventListener("click", () => {
@@ -571,6 +695,17 @@
       btn.textContent = "处理中…";
       $("progress").classList.add("active");
       setProgress(0, "提交任务…");
+
+      // 显示并初始化下载预览卡片
+      const previewCard = $("download-preview-card");
+      const dThumb = $("d-thumb");
+      const dTitle = $("d-title");
+      const dChannel = $("d-channel");
+      previewCard.style.display = "block";
+      dTitle.textContent = "正在连接并获取视频元数据…";
+      dChannel.textContent = "—";
+      dThumb.src = "/icon.jpg";
+      dThumb.classList.add("pulse");
 
       try {
         const form = new FormData();
@@ -598,9 +733,19 @@
         es.onmessage = (ev) => {
           let data;
           try { data = JSON.parse(ev.data); } catch { return; }
+
+          // 如果获取到了元数据，实时更新下载卡片展示
+          if (data.video_id) {
+            $("d-title").textContent = data.title || "未知视频";
+            $("d-channel").textContent = data.uploader || "未知作者";
+            $("d-thumb").src = `https://i.ytimg.com/vi/${data.video_id}/hqdefault.jpg`;
+            $("d-thumb").classList.remove("pulse");
+          }
+
           if (data.error) {
             showErr(data.error);
             $("progress").classList.remove("active");
+            $("download-preview-card").style.display = "none";
             es.close();
             resolve();
             return;
@@ -610,7 +755,16 @@
             const r = data.result;
             addHistory(r);
             playIndex(0);  // 新生成的立即播放
-            setTimeout(() => $("progress").classList.remove("active"), 800);
+
+            // 自动跳转到“播放器”页面，方便用户播放
+            setTimeout(() => {
+              showTab("history");
+            }, 1000);
+
+            setTimeout(() => {
+              $("progress").classList.remove("active");
+              $("download-preview-card").style.display = "none";
+            }, 1500);
             es.close();
             resolve();
             return;
@@ -668,8 +822,12 @@
       }
     }
 
+    // 播放器 SVGs
+    const playSvg = `<svg class="icon" style="width: 20px; height: 20px; fill: currentColor; margin-left: 2px;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg>`;
+    const pauseSvg = `<svg class="icon" style="width: 20px; height: 20px; fill: currentColor;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M6.75 5.25a.75.75 0 0 1 .75-.75H9a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H7.5a.75.75 0 0 1-.75-.75V5.25zm7.5 0A.75.75 0 0 1 15 4.5h1.5a.75.75 0 0 1 .75.75v13.5a.75.75 0 0 1-.75.75H15a.75.75 0 0 1-.75-.75V5.25z" clip-rule="evenodd" /></svg>`;
+
     function updatePlayBtn(playing) {
-      $("pb-play").textContent = playing ? "❚❚" : "▶";
+      $("pb-play").innerHTML = playing ? pauseSvg : playSvg;
     }
 
     $("pb-play").addEventListener("click", () => {
@@ -743,15 +901,18 @@
         box.innerHTML = '<div class="empty">暂无记录。处理完成后会显示在这里。</div>';
         return;
       }
+      const itemPlaySvg = `<svg class="icon" style="width: 14px; height: 14px; fill: var(--accent); margin-right: 6px;" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M4.5 5.653c0-1.427 1.529-2.33 2.779-1.643l11.54 6.347c1.295.712 1.295 2.573 0 3.286L7.28 19.99c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" /></svg>`;
+      const itemTrashSvg = `<svg class="icon" style="width: 14px; height: 14px;" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>`;
+
       box.innerHTML = history.map((r, i) => `
         <div class="h-item ${i === currentIndex ? 'active' : ''}" data-i="${i}">
-          <span class="h-play-icon">${i === currentIndex ? '▶' : ''}</span>
+          <span class="h-play-icon">${i === currentIndex ? itemPlaySvg : ''}</span>
           <div class="h-info">
             <div class="h-title">${escapeHtml(r.title)}</div>
             <div class="h-meta">${escapeHtml(r.uploader || "")}</div>
           </div>
           <span class="badge" style="margin-right: 6px;">${r.mode === "tts" ? "中文TTS" : "原音"}</span>
-          <button class="h-delete-btn" data-i="${i}" title="删除">✕</button>
+          <button class="h-delete-btn" data-i="${i}" title="删除">${itemTrashSvg}</button>
         </div>
       `).join("");
       box.querySelectorAll(".h-item").forEach(el => {
@@ -854,7 +1015,7 @@
         const resp = await fetch("/api/cookies", { method: "POST", body: form });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || "保存失败");
-        ckMsg("✓ " + data.message, true);
+        ckMsg("已保存: " + data.message, true);
         setCookieStatus(true);
         $("ck-textarea").value = "";
       } catch (e) {
@@ -870,7 +1031,7 @@
         const data = await resp.json();
         if (!resp.ok) throw new Error("清除失败");
         setCookieStatus(data.has_cookies);
-        ckMsg(data.has_cookies ? "已清除页面上传的 cookies（仍有环境变量配置生效）" : "✓ cookies 已清除", true);
+        ckMsg(data.has_cookies ? "已清除页面上传 of cookies（仍有环境变量配置生效）" : "成功：cookies 已清除", true);
         $("ck-textarea").value = "";
       } catch (e) {
         ckMsg(e.message, false);

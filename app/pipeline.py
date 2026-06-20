@@ -36,6 +36,9 @@ class TaskState:
     message: str = ""
     result: TaskResult | None = None
     error: str | None = None
+    video_id: str | None = None
+    title: str | None = None
+    uploader: str | None = None
 
 
 def _audio_filename(video_id: str, mode: str) -> str:
@@ -53,6 +56,11 @@ async def run_audio_mode(url: str, state: TaskState, progress: ProgressFn | None
     state.stage, state.percent, state.message = "fetching", 5, "获取视频信息…"
     _emit(state, progress)
     info = await yt.fetch_info(url)
+
+    # 提前提取元数据用于前端展示
+    state.video_id = info.video_id
+    state.title = info.title
+    state.uploader = info.uploader
 
     state.stage, state.percent, state.message = "downloading", 20, f"下载音频: {info.title}"
     _emit(state, progress)
@@ -81,6 +89,11 @@ async def run_tts_mode(url: str, state: TaskState, progress: ProgressFn | None, 
     state.stage, state.percent, state.message = "fetching", 5, "获取视频信息…"
     _emit(state, progress)
     info = await yt.fetch_info(url)
+
+    # 提前提取元数据用于前端展示
+    state.video_id = info.video_id
+    state.title = info.title
+    state.uploader = info.uploader
 
     state.stage, state.percent, state.message = "subtitling", 15, "提取字幕…"
     _emit(state, progress)
