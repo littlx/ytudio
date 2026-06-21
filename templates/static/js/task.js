@@ -7,7 +7,7 @@ import { renderHistory } from "./views/history.js";
 
 let selectedMode = "audio";
 let currentTaskId = null;
-let currentES = null;
+const activeES = new Map();
 
 export function getSelectedMode() { return selectedMode; }
 
@@ -21,7 +21,7 @@ export function initTask(toast) {
     setMode(m);
     modeAudio.classList.toggle("selected", m === "audio");
     modeTts.classList.toggle("selected", m === "tts");
-    // 同步 radio 勾选状态(供表单语义与可访问性)
+    // 同步 radio 勾选状态
     modeAudio.querySelector('input[type="radio"]').checked = (m === "audio");
     modeTts.querySelector('input[type="radio"]').checked = (m === "tts");
   }
@@ -49,7 +49,7 @@ export function initTask(toast) {
 
     const btn = document.getElementById("btn-start");
     btn.disabled = true;
-    btn.textContent = "处理中…";
+    btn.textContent = "提交中…";
     document.getElementById("progress").classList.add("active");
     setProgress(0, "提交任务…");
     showPreviewCard();
@@ -57,32 +57,45 @@ export function initTask(toast) {
     try {
       const voice = getState().selectedVoice || "";
       const taskId = await startTask(url, selectedMode, voice);
-      currentTaskId = taskId;
-      await subscribe(taskId, toast);
+      
+      // 清空输入框，方便用户继续添加新视频
+      document.getElementById("url").value = "";
+      
+      trackTask(taskId, toast);
     } catch (e) {
       toast(e.message, "err");
+      document.getElementById("progress").classList.remove("active");
+      hidePreviewCard();
     } finally {
-      // 仅当任务未在重试中(无 currentTaskId)时恢复按钮
-      if (!currentTaskId) {
-        btn.disabled = false;
-        btn.textContent = "开始处理";
-      }
+      btn.disabled = false;
+      btn.textContent = "开始处理";
     }
   });
 
   // 取消
   document.getElementById("p-cancel").addEventListener("click", async () => {
     if (!currentTaskId) return;
-    await cancelTask(currentTaskId);
-    if (currentES) { currentES.close(); currentES = null; }
-    currentTaskId = null;
-    document.getElementById("progress").classList.remove("active");
-    hidePreviewCard();
-    hideRetryButton();
-    const btn = document.getElementById("btn-start");
-    btn.disabled = false;
-    btn.textContent = "开始处理";
-    toast("已取消任务", "warn");
+    const cancelingId = currentTaskId;
+
+    const es = activeES.get(cancelingId);
+    if (es) {
+      es.close();
+      activeES.delete(cancelingId);
+    }
+
+    if (currentTaskId === cancelingId) {
+      document.getElementById("progress").classList.remove("active");
+      hidePreviewCard();
+      hideRetryButton();
+      currentTaskId = null;
+    }
+
+    try {
+      await cancelTask(cancelingId);
+      toast("已取消任务", "warn");
+    } catch (e) {
+      toast(`取消失败: ${e.message}`, "err");
+    }
   });
 
   // 从断点重试失败任务
@@ -96,96 +109,124 @@ export function initTask(toast) {
     showPreviewCard();
     try {
       const newTaskId = await retryTask(failedTaskId);
-      currentTaskId = newTaskId;
-      await subscribe(newTaskId, toast);
+      trackTask(newTaskId, toast);
     } catch (e) {
       toast(e.message, "err");
+      document.getElementById("progress").classList.remove("active");
+      hidePreviewCard();
     } finally {
-      if (!currentTaskId) {
-        btn.disabled = false;
-        btn.textContent = "开始处理";
-      }
+      btn.disabled = false;
+      btn.textContent = "开始处理";
     }
   }
-  // 暴露给 subscribe 的 error 分支使用
+  // 暴露给外部使用
   window._retryFromCheckpoint = retryFromCheckpoint;
 }
 
-function subscribe(taskId, toast) {
-  return new Promise((resolve) => {
-    const es = progressStream(taskId);
-    currentES = es;
-    es.onmessage = (ev) => {
-      let data;
-      try { data = JSON.parse(ev.data); } catch { return; }
+function trackTask(taskId, toast) {
+  const es = progressStream(taskId);
+  activeES.set(taskId, es);
+  currentTaskId = taskId;
 
-      // 实时更新下载卡片元数据
-      if (data.video_id) updatePreviewCard(data);
+  let taskTitle = "视频";
 
-      if (data.error) {
+  es.onmessage = (ev) => {
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
+
+    if (data.title) {
+      taskTitle = data.title;
+    }
+
+    if (data.video_id && taskId === currentTaskId) {
+      updatePreviewCard(data);
+    }
+
+    if (data.error) {
+      if (taskId === currentTaskId) {
         toast(data.error, "err");
-        // 失败时保留进度卡片与当前 taskId(供重试),显示重试按钮
         hideRetryButton();
         showRetryButton(() => {
-          const failedId = currentTaskId;
-          currentTaskId = null;
-          window._retryFromCheckpoint(failedId, toast);
+          activeES.delete(taskId);
+          es.close();
+          window._retryFromCheckpoint(taskId, toast);
         });
-        currentES = null; es.close();
-        resolve();
-        return;
+      } else {
+        toast(`任务「${taskTitle}」处理失败: ${data.error}`, "err");
       }
-      if (data.result) {
-        setProgress(100, "完成");
-        hideRetryButton();
-        const r = data.result;
-        
-        const { history, currentIndex } = getState();
-        const idx = history.findIndex(h => h.video_id === r.video_id);
-        const newHistory = idx >= 0 ? history.filter((_, i) => i !== idx) : history.slice();
-        newHistory.unshift(r);
+      activeES.delete(taskId);
+      es.close();
+      return;
+    }
 
-        let newCurrentIndex = currentIndex;
-        let shouldLoadNewTrack = false;
+    if (data.result) {
+      const r = data.result;
+      const { history, currentIndex } = getState();
+      const idx = history.findIndex(h => h.video_id === r.video_id);
+      const newHistory = idx >= 0 ? history.filter((_, i) => i !== idx) : history.slice();
+      newHistory.unshift(r);
 
-        if (currentIndex >= 0 && history[currentIndex]) {
-          const activeVideoId = history[currentIndex].video_id;
-          if (activeVideoId === r.video_id) {
-            newCurrentIndex = 0;
-            shouldLoadNewTrack = true;
-          } else {
-            newCurrentIndex = newHistory.findIndex(h => h.video_id === activeVideoId);
-            if (newCurrentIndex < 0) {
-              newCurrentIndex = 0;
-              shouldLoadNewTrack = true;
-            }
-          }
-        } else {
+      let newCurrentIndex = currentIndex;
+      let shouldLoadNewTrack = false;
+
+      if (currentIndex >= 0 && history[currentIndex]) {
+        const activeVideoId = history[currentIndex].video_id;
+        if (activeVideoId === r.video_id) {
           newCurrentIndex = 0;
           shouldLoadNewTrack = true;
+        } else {
+          newCurrentIndex = newHistory.findIndex(h => h.video_id === activeVideoId);
+          if (newCurrentIndex < 0) {
+            newCurrentIndex = 0;
+            shouldLoadNewTrack = true;
+          }
         }
+      } else {
+        newCurrentIndex = 0;
+        shouldLoadNewTrack = true;
+      }
 
-        setState({ history: newHistory, currentIndex: newCurrentIndex });
-        renderHistory();
+      setState({ history: newHistory, currentIndex: newCurrentIndex });
+      renderHistory();
 
-        if (shouldLoadNewTrack) {
-          // 仅载入不自动播放
-          window._playIndex(0, false);
-        }
+      if (shouldLoadNewTrack) {
+        window._playIndex(0, false);
+      }
 
-        currentES = null; es.close();
-        currentTaskId = null;
+      activeES.delete(taskId);
+      es.close();
+
+      if (taskId === currentTaskId) {
+        setProgress(100, "完成");
+        hideRetryButton();
         toast("处理完成", "ok");
         setTimeout(() => {
-          document.getElementById("progress").classList.remove("active");
-          hidePreviewCard();
+          if (currentTaskId === taskId) {
+            document.getElementById("progress").classList.remove("active");
+            hidePreviewCard();
+            currentTaskId = null;
+          }
         }, 1500);
-        resolve();
-        return;
+      } else {
+        toast(`任务「${r.title || taskTitle}」处理完成`, "ok");
       }
+      return;
+    }
+
+    if (taskId === currentTaskId) {
       const label = stageLabel(data.stage);
       setProgress(data.percent || 0, `${label} · ${data.message || ""}`);
-    };
-    es.onerror = () => { currentES = null; es.close(); resolve(); };
-  });
+    }
+  };
+
+  es.onerror = () => {
+    activeES.delete(taskId);
+    es.close();
+    if (taskId === currentTaskId) {
+      toast(`连接中断，后台任务仍在排队或运行中。`, "warn");
+      document.getElementById("progress").classList.remove("active");
+      hidePreviewCard();
+      currentTaskId = null;
+    }
+  };
 }

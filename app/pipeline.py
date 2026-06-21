@@ -131,6 +131,10 @@ async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None
 
     logger.info("任务 %s 开始: mode=%s url=%s resume=%s", state.task_id, mode, url, resume)
     try:
+        if _sem.locked():
+            state.stage = "pending"
+            state.message = "排队中，等待前一个任务完成..."
+            emit()
         async with _sem:
             pipeline = steps.get_pipeline(mode)
             ctx = steps.Ctx(url=url, mode=mode, voice=voice, state=state)
