@@ -1,0 +1,13 @@
+[project]
+name = "ytudio"
+version = "0.1.0"
+description = "YouTube → 中文音频的本地 Web 小工具"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:httpx.*",
+]

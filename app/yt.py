@@ -42,20 +42,26 @@ def _ydl_base_opts() -> dict[str, Any]:
     return opts
 
 
-async def fetch_info(url: str, download_thumb: bool = True) -> VideoInfo:
-    """获取视频元数据（标题、作者、ID、时长、可用字幕语言）。
+async def fetch_info(url: str, bundle: "AssetBundle | None" = None, download_thumb: bool = True) -> VideoInfo:
+    """获取视频元数据(标题、作者、ID、时长、可用字幕语言)。
 
-    download_thumb=True 时同时下载缩略图到 output/{video_id}.jpg，
-    供前端同源加载（替代 i.ytimg.com 外链，保护隐私并支持离线）。
+    传入 bundle 时缩略图下载到资产包目录 thumb.%(ext)s;否则下到 output/ 根目录
+    (向后兼容,实际调用方均传 bundle)。download_thumb=True 才下载缩略图。
     """
+    from . import assets  # 延迟导入避免循环
+
     def _extract() -> VideoInfo:
         opts = _ydl_base_opts()
         if download_thumb:
             opts["writethumbnail"] = True
             opts["skip_download"] = True
-            # 缩略图落盘用 video_id 命名，便于 /thumb/{video_id} 定位
-            opts["outtmpl"] = str(config.OUTPUT_DIR / "%(id)s.%(ext)s")
-        # process=False：只取元数据，不做格式选择，避免命中 iamf 等异常编码报错
+            # 缩略图落盘到资产包目录,统一命名为 thumb.%(ext)s
+            if bundle is not None:
+                bundle.ensure_dir()
+                opts["outtmpl"] = str(bundle.dir / "thumb.%(ext)s")
+            else:
+                opts["outtmpl"] = str(config.OUTPUT_DIR / "%(id)s.%(ext)s")
+        # process=False:只取元数据,不做格式选择,避免命中 iamf 等异常编码报错
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=download_thumb, process=not download_thumb)
         video_id = info.get("id", "")
@@ -73,22 +79,23 @@ async def fetch_info(url: str, download_thumb: bool = True) -> VideoInfo:
 
 async def extract_audio(
     url: str,
-    out_path: Path,
+    bundle: "AssetBundle",
     on_progress: "Callable[[float, float], None] | None" = None,
 ) -> Path:
-    """下载原始音频流，保留原有格式（浏览器原生可播 m4a/webm）。
+    """下载原始音频流到资产包目录,保留原有格式(浏览器原生可播 m4a/webm)。
 
-    out_path 不含扩展名；yt-dlp 按实际容器写入 .%(ext)s。
-    on_progress(downloaded_bytes, total_bytes) 回报下载进度（total 为 0 时未知）。
+    最终文件为 bundle.dir/audio.{ext},ext 由 yt-dlp 按实际容器决定。
+    on_progress(downloaded_bytes, total_bytes) 回报下载进度(total 为 0 时未知)。
     返回最终生成的文件路径。
     """
     opts = _ydl_base_opts()
+    bundle.ensure_dir()
     opts.update({
-        # 优先纯音频；bestaudio 可能命中浏览器无法播放的格式（如 iamf），
-        # 用 ba/b 排序并依靠下面 ext 过滤；不强制转码。
+        # 优先纯音频;bestaudio 可能命中浏览器无法播放的格式(如 iamf),
+        # 用 ba/b 排序并依靠下面 ext 过滤;不强制转码。
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        "outtmpl": str(out_path) + ".%(ext)s",
-        # 保留原始格式，不做 FFmpegExtractAudio 转码
+        "outtmpl": str(bundle.dir / "audio.%(ext)s"),
+        # 保留原始格式,不做 FFmpegExtractAudio 转码
     })
 
     if on_progress is not None:
@@ -111,23 +118,24 @@ async def extract_audio(
     return await asyncio.to_thread(_run)
 
 
-async def extract_subtitle(url: str, out_dir: Path, video_id: str, source_lang: str = "en") -> tuple[str, str]:
-    """提取指定语言的字幕（模式 B 第 1 步）。
+async def extract_subtitle(url: str, bundle: "AssetBundle", source_lang: str = "en") -> tuple[str, str]:
+    """提取指定语言的字幕到资产包目录(模式 B 第 1 步)。
 
     单语言下载以规避 YouTube 429 限流。后续交由 DeepSeek 翻译整理成中文。
     返回 (字幕文件路径, 字幕语言)。无字幕时抛出 RuntimeError。
 
-    用已知的 video_id 精确定位落盘文件，而非全局 glob 取最新——
+    字幕落盘到 bundle.dir/subtitle.{lang}.{ext},按 video_id 精确定位,
     避免并发任务互相取到对方的字幕文件。
     """
     opts = _ydl_base_opts()
+    bundle.ensure_dir()
     opts.update({
         "skip_download": True,
         "writesubtitles": True,        # 手动字幕
         "writeautomaticsub": True,     # 自动生成字幕
         "subtitleslangs": [source_lang, f"{source_lang}-*"],
         "subtitlesformat": "json3",
-        "outtmpl": str(out_dir / f"{video_id}.%(ext)s"),
+        "outtmpl": str(bundle.dir / f"subtitle.{bundle.video_id}.%(ext)s"),
     })
 
     def _run() -> None:
@@ -136,20 +144,20 @@ async def extract_subtitle(url: str, out_dir: Path, video_id: str, source_lang: 
 
     await asyncio.to_thread(_run)
 
-    # 精确定位：按 video_id 前缀找该任务自己的字幕文件
+    # 精确定位:在资产包目录内按语言前缀找字幕文件
     candidates = sorted(
-        out_dir.glob(f"{video_id}.{source_lang}.*"),
+        bundle.dir.glob(f"subtitle.{bundle.video_id}.{source_lang}.*"),
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     if not candidates:
-        # 兜底：任意 source_lang 字幕文件
+        # 兜底:任意 source_lang 字幕文件
         candidates = sorted(
-            out_dir.glob(f"{video_id}.*{source_lang}*"),
+            bundle.dir.glob(f"subtitle.{bundle.video_id}.*{source_lang}*"),
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
     if not candidates:
         raise RuntimeError(
-            f"该视频没有可用的 {source_lang} 字幕，建议改用「直接提取音频」模式。"
+            f"该视频没有可用的 {source_lang} 字幕,建议改用「直接提取音频」模式。"
         )
 
     return str(candidates[0]), source_lang

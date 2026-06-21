@@ -73,19 +73,21 @@ def _concat_mp3(parts: list[Path], out_path: Path) -> None:
 
 async def synthesize_speech(
     paragraphs: list[str],
-    out_path: Path,
+    bundle: "AssetBundle",
     voice: str | None = None,
     on_progress: "ProgressFn | None" = None,
-) -> None:
-    """把中文段落列表合成为单个 mp3 写入 out_path。
+) -> Path:
+    """把中文段落列表合成为单个 mp3 写入资产包 audio.mp3。
 
-    - 逐段用 edge-tts 流式合成到临时片段；
-    - 再用 ffmpeg concat 拼接（无重编码）；
+    - 逐段用 edge-tts 流式合成到资产包内临时片段目录;
+    - 再用 ffmpeg concat 拼接(无重编码);
     - on_progress(done, total, msg) 按段回报合成进度。
-    单段过长仍可能慢，但段落由模型切分（单段约 ≤300 字），基本不会超时。
+    - 返回最终音频路径(bundle.dir/audio.mp3)。
+
+    单段过长仍可能慢,但段落由模型切分(单段约 ≤300 字),基本不会超时。
     """
     if isinstance(paragraphs, str):
-        # 兼容旧调用：传入整串则当作单段
+        # 兼容旧调用:传入整串则当作单段
         paragraphs = [paragraphs]
     paragraphs = [p.strip() for p in paragraphs if p and p.strip()]
     if not paragraphs:
@@ -93,18 +95,20 @@ async def synthesize_speech(
 
     voice = voice or config.TTS_VOICE
     total = len(paragraphs)
+    out_path = bundle.dir / "audio.mp3"
+    bundle.ensure_dir()
 
-    # 单段直接合成，无需拼接
+    # 单段直接合成,无需拼接
     if total == 1:
         if on_progress:
             on_progress(0, 1, "合成中文语音…")
         await _synthesize_one(paragraphs[0], voice, out_path)
         if on_progress:
             on_progress(1, 1, "语音合成完成")
-        return
+        return out_path
 
-    # 多段：逐段合成到临时目录，再拼接
-    tmp_dir = out_path.parent / f".{out_path.stem}_tts_parts"
+    # 多段:逐段合成到资产包内临时目录,再拼接
+    tmp_dir = bundle.tts_parts_dir
     tmp_dir.mkdir(exist_ok=True)
     parts: list[Path] = []
     try:
@@ -123,4 +127,5 @@ async def synthesize_speech(
         # 清理临时片段
         for p in parts:
             p.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        tmp_dir.rmdir(missing_ok=True)
+    return out_path

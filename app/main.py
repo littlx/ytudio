@@ -17,15 +17,27 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from . import config, cookies, history_store, pipeline, static, tasks, voices
+from . import assets, config, cookies, history_store, pipeline, static, tasks, voices
 
 templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时尝试打开浏览器（本地工具，方便使用）
+    # 启动时:确保目录存在、迁移旧版散落文件到资产包结构、恢复任务状态
     config.OUTPUT_DIR.mkdir(exist_ok=True)
+    config.DATA_DIR.mkdir(exist_ok=True)
+    try:
+        assets.migrate_legacy()
+    except Exception as e:
+        # 迁移失败不阻塞启动,旧文件仍可被新逻辑兜底访问
+        import logging
+        logging.getLogger(__name__).warning("资产包迁移失败: %s", e)
+    try:
+        tasks.init()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("任务状态恢复失败: %s", e)
     try:
         webbrowser.open(f"http://127.0.0.1:{config.PORT}")
     except Exception:
@@ -169,20 +181,17 @@ async def progress_stream(task_id: str, _: None = Depends(verify_token)):
     return tasks.progress_stream(task_id)
 
 
-# 缩略图支持的扩展名（yt-dlp 落盘的实际格式）
-_THUMB_EXTS = (".jpg", ".webp", ".png")
-
-
 @app.get("/thumb/{video_id}")
 async def get_thumb(video_id: str, _: None = Depends(verify_token)):
-    """提供视频缩略图（本地存储，替代 i.ytimg.com 外链，支持离线）。"""
+    """提供视频缩略图(资产包内 thumb.{ext},替代 i.ytimg.com 外链,支持离线)。"""
     if Path(video_id).name != video_id:
         raise HTTPException(400, "非法 video_id")
-    for ext in _THUMB_EXTS:
-        path = config.OUTPUT_DIR / f"{video_id}{ext}"
-        if path.exists() and path.is_file():
-            return FileResponse(path, media_type=f"image/{ext.lstrip('.')}")
-    # 兜底：未找到缩略图，返回默认图标
+    bundle = assets.AssetBundle(video_id)
+    thumb = bundle.thumb_path()
+    if thumb is not None and thumb.is_file():
+        ext = thumb.suffix.lstrip(".")
+        return FileResponse(thumb, media_type=f"image/{ext}")
+    # 兜底:未找到缩略图,返回默认图标
     return FileResponse(config.TEMPLATES_DIR / "icon.jpg", media_type="image/jpeg")
 
 
@@ -197,45 +206,46 @@ _MIME_BY_EXT = {
 }
 
 
-def _audio_mime(name: str) -> str:
-    ext = Path(name).suffix.lower()
-    return _MIME_BY_EXT.get(ext, "audio/mpeg")
+def _audio_mime(ext: str) -> str:
+    return _MIME_BY_EXT.get(ext.lower(), "audio/mpeg")
 
 
-@app.get("/audio/{name}")
-async def serve_audio(name: str, _: None = Depends(verify_token)):
-    """提供生成的音频文件播放。"""
-    if Path(name).name != name:
-        raise HTTPException(400, "非法文件名")
-    path = config.OUTPUT_DIR / name
-    if not path.exists() or not path.is_file():
+@app.get("/audio/{video_id}")
+async def serve_audio(video_id: str, _: None = Depends(verify_token)):
+    """提供生成的音频文件播放(从资产包 audio.{ext} 取)。"""
+    if Path(video_id).name != video_id:
+        raise HTTPException(400, "非法 video_id")
+    bundle = assets.AssetBundle(video_id)
+    path = bundle.audio_path()
+    if path is None or not path.is_file():
         raise HTTPException(404, "音频文件不存在")
-    return FileResponse(path, media_type=_audio_mime(name), filename=name)
+    return FileResponse(path, media_type=_audio_mime(path.suffix), filename=path.name)
 
 
-@app.get("/api/download/{name}")
-async def download_audio(name: str, _: None = Depends(verify_token)):
-    """下载音频文件。"""
-    if Path(name).name != name:
-        raise HTTPException(400, "非法文件名")
-    path = config.OUTPUT_DIR / name
-    if not path.exists() or not path.is_file():
+@app.get("/api/download/{video_id}")
+async def download_audio(video_id: str, _: None = Depends(verify_token)):
+    """下载音频文件(从资产包 audio.{ext} 取)。"""
+    if Path(video_id).name != video_id:
+        raise HTTPException(400, "非法 video_id")
+    bundle = assets.AssetBundle(video_id)
+    path = bundle.audio_path()
+    if path is None or not path.is_file():
         raise HTTPException(404, "音频文件不存在")
     return FileResponse(
-        path, media_type=_audio_mime(name), filename=name,
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        path, media_type=_audio_mime(path.suffix), filename=path.name,
+        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
     )
 
 
 @app.get("/api/transcript/{video_id}")
 async def get_transcript(video_id: str, _: None = Depends(verify_token)):
-    """返回 TTS 模式生成的中文译文文稿。"""
+    """返回 TTS 模式生成的中文译文文稿(资产包内 transcript_zh.txt)。"""
     if Path(video_id).name != video_id:
         raise HTTPException(400, "非法 video_id")
-    path = config.OUTPUT_DIR / f"{video_id}_zh.txt"
-    if not path.exists():
+    bundle = assets.AssetBundle(video_id)
+    if not bundle.transcript_path.exists():
         raise HTTPException(404, "未找到该视频的译文文稿")
-    return {"video_id": video_id, "transcript": path.read_text(encoding="utf-8")}
+    return {"video_id": video_id, "transcript": bundle.transcript_path.read_text(encoding="utf-8")}
 
 
 @app.get("/api/history")
@@ -246,65 +256,31 @@ async def get_history(_: None = Depends(verify_token)):
 
 @app.delete("/api/history")
 async def clear_history(_: None = Depends(verify_token)):
-    """清空全部历史：删除 output/ 下所有文件，并清空 history.json。不可恢复。"""
+    """清空全部历史:删除所有资产包目录,并清空 history.json。不可恢复。"""
     deleted: list[str] = []
     if config.OUTPUT_DIR.exists():
-        for p in config.OUTPUT_DIR.iterdir():
-            if p.is_file():
-                try:
-                    p.unlink()
-                    deleted.append(p.name)
-                except Exception:
-                    pass
+        for d in config.OUTPUT_DIR.iterdir():
+            if d.is_dir() and not d.name.startswith("."):
+                bundle = assets.AssetBundle(d.name)
+                deleted.extend(bundle.remove())
     history_store.clear()
     return {"ok": True, "deleted": deleted, "count": len(deleted)}
 
 
-@app.delete("/api/history/{name}")
-async def delete_history_item(name: str, _: None = Depends(verify_token)):
-    """删除音频文件及其元数据、字幕文件。"""
-    if Path(name).name != name:
-        raise HTTPException(400, "非法文件名")
+@app.delete("/api/history/{video_id}")
+async def delete_history_item(video_id: str, _: None = Depends(verify_token)):
+    """删除资产包(音频/缩略图/字幕/译文/元数据)并从历史索引移除。"""
+    if Path(video_id).name != video_id:
+        raise HTTPException(400, "非法 video_id")
 
-    audio_path = config.OUTPUT_DIR / name
-    json_path = audio_path.with_suffix(".json")
+    bundle = assets.AssetBundle(video_id)
+    deleted_files = bundle.remove()
 
-    deleted_files = []
-    if audio_path.exists() and audio_path.is_file():
-        try:
-            audio_path.unlink()
-            deleted_files.append(name)
-        except Exception as e:
-            raise HTTPException(500, f"删除音频文件失败: {e}")
-
-    if json_path.exists() and json_path.is_file():
-        try:
-            json_path.unlink()
-            deleted_files.append(json_path.name)
-        except Exception:
-            pass  # 元数据删除失败不影响主要流程
-
-    # 清理相关的字幕等临时文件 (如果有)
-    video_id = None
-    if name.endswith("_zh.mp3"):
-        video_id = name[:-7]
-    elif "_audio" in name:
-        video_id = name.split("_audio")[0]
-
-    if video_id:
-        for p in config.OUTPUT_DIR.glob(f"{video_id}.*"):
-            if p.is_file() and p.suffix in (".json3", ".vtt", ".txt"):
-                try:
-                    p.unlink()
-                    deleted_files.append(p.name)
-                except Exception:
-                    pass
-
-    # 从历史索引中移除记录（即使音频文件已不在，也要清理 history.json）
-    history_store.remove(name)
+    # 从历史索引中移除记录(即使资产包已不在,也要清理 history.json)
+    history_store.remove(video_id)
 
     if not deleted_files:
-        raise HTTPException(404, "未找到该音频文件")
+        raise HTTPException(404, "未找到该视频的资产包")
 
     return {"ok": True, "deleted": deleted_files}
 

@@ -65,6 +65,10 @@ COOKIES_RUNTIME_FILE: Path = BASE_DIR / "data" / "cookies.txt"
 # 替代每次全量扫描 output/ 目录，提升历史列表读取性能。
 HISTORY_FILE: Path = DATA_DIR / "history.json"
 
+# 任务状态持久化文件（JSON 字典，task_id -> 状态摘要）。
+# 进程重启后供 SSE 重连查看终态;进行中的任务标记为 error。
+TASKS_FILE: Path = DATA_DIR / "tasks.json"
+
 
 def cookies_file_to_use() -> str:
     """返回实际生效的 cookies 文件绝对路径（优先环境变量，其次运行时上传），无则空串。"""
