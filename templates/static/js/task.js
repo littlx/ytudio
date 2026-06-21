@@ -139,18 +139,43 @@ function subscribe(taskId, toast) {
         setProgress(100, "完成");
         hideRetryButton();
         const r = data.result;
-        // 新生成的加入历史并播放
-        const { history } = getState();
+        
+        const { history, currentIndex } = getState();
         const idx = history.findIndex(h => h.video_id === r.video_id);
         const newHistory = idx >= 0 ? history.filter((_, i) => i !== idx) : history.slice();
         newHistory.unshift(r);
-        setState({ history: newHistory });
+
+        let newCurrentIndex = currentIndex;
+        let shouldLoadNewTrack = false;
+
+        if (currentIndex >= 0 && history[currentIndex]) {
+          const activeVideoId = history[currentIndex].video_id;
+          if (activeVideoId === r.video_id) {
+            newCurrentIndex = 0;
+            shouldLoadNewTrack = true;
+          } else {
+            newCurrentIndex = newHistory.findIndex(h => h.video_id === activeVideoId);
+            if (newCurrentIndex < 0) {
+              newCurrentIndex = 0;
+              shouldLoadNewTrack = true;
+            }
+          }
+        } else {
+          newCurrentIndex = 0;
+          shouldLoadNewTrack = true;
+        }
+
+        setState({ history: newHistory, currentIndex: newCurrentIndex });
         renderHistory();
-        // 立即播放
-        window._playIndex(0);
+
+        if (shouldLoadNewTrack) {
+          // 仅载入不自动播放
+          window._playIndex(0, false);
+        }
+
         currentES = null; es.close();
         currentTaskId = null;
-        toast("处理完成,已开始播放", "ok");
+        toast("处理完成", "ok");
         setTimeout(() => {
           document.getElementById("progress").classList.remove("active");
           hidePreviewCard();

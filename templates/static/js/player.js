@@ -59,7 +59,7 @@ function updateMediaSession(r) {
 
 let lastProgressSave = 0;
 
-export function playIndex(i) {
+export function playIndex(i, shouldPlay = true) {
   const { history, playMode } = getState();
   if (history.length === 0) return;
   // 顺序模式:越界钳制到边界;循环模式:回绕
@@ -84,11 +84,31 @@ export function playIndex(i) {
 
   // 恢复记忆进度
   const resume = getState().progressMap[r.video_id] || 0;
-  a.play().then(() => {
-    if (resume > 1 && resume < (a.duration || Infinity) - 2) a.currentTime = resume;
-    a.playbackRate = speeds[currentSpeedIndex];
-    updatePlayBtn(true);
-  }).catch(() => updatePlayBtn(false));
+  if (shouldPlay) {
+    a.play().then(() => {
+      if (resume > 1 && resume < (a.duration || Infinity) - 2) a.currentTime = resume;
+      a.playbackRate = speeds[currentSpeedIndex];
+      updatePlayBtn(true);
+    }).catch(() => updatePlayBtn(false));
+  } else {
+    const onMeta = () => {
+      const dur = a.duration || 0;
+      document.getElementById("pb-dur").textContent = fmtTime(dur);
+      if (resume > 1 && resume < (dur || Infinity) - 2) {
+        a.currentTime = resume;
+        document.getElementById("pb-cur").textContent = fmtTime(resume);
+        const pct = dur > 0 ? resume / dur * 100 : 0;
+        document.getElementById("pb-seek-fill").style.width = pct + "%";
+        document.getElementById("pb-seek-thumb").style.left = pct + "%";
+      } else {
+        document.getElementById("pb-cur").textContent = "0:00";
+        document.getElementById("pb-seek-fill").style.width = "0%";
+        document.getElementById("pb-seek-thumb").style.left = "0%";
+      }
+    };
+    a.addEventListener("loadedmetadata", onMeta, { once: true });
+    updatePlayBtn(false);
+  }
 }
 
 function saveCurrentProgress() {
@@ -342,10 +362,12 @@ export function restoreLastSession() {
   playerBar().classList.add("show");
   const resume = progressMap[r.video_id] || 0;
   const onMeta = () => {
-    if (resume > 1 && resume < (a.duration || Infinity) - 2) {
+    const dur = a.duration || 0;
+    document.getElementById("pb-dur").textContent = fmtTime(dur);
+    if (resume > 1 && resume < (dur || Infinity) - 2) {
       a.currentTime = resume;
       document.getElementById("pb-cur").textContent = fmtTime(resume);
-      const pct = a.duration > 0 ? resume / a.duration * 100 : 0;
+      const pct = dur > 0 ? resume / dur * 100 : 0;
       document.getElementById("pb-seek-fill").style.width = pct + "%";
       document.getElementById("pb-seek-thumb").style.left = pct + "%";
     }
