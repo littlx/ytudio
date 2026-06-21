@@ -94,3 +94,10 @@ export async function cancelTask(taskId) {
 export function progressStream(taskId) {
   return new EventSource(authUrl(`/api/progress/${taskId}`));
 }
+
+/** 从断点重试失败的任务,返回新 task_id。 */
+export async function retryTask(taskId) {
+  const resp = await authFetch(`/api/retry/${taskId}`, { method: "POST" });
+  if (!resp.ok) await _parseError(resp, "重试失败");
+  return (await resp.json()).task_id;
+}

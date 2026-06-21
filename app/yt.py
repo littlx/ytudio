@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any, Callable
 import yt_dlp
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,6 +68,8 @@ async def fetch_info(url: str, bundle: "AssetBundle | None" = None, download_thu
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=download_thumb, process=not download_thumb)
         video_id = info.get("id", "")
+        logger.info("获取视频信息成功: id=%s title=%s 字幕语言=%s",
+                     video_id, info.get("title", ""), pick_subtitle_lang(info))
         return VideoInfo(
             video_id=video_id,
             title=info.get("title", "未知标题"),
@@ -113,7 +118,9 @@ async def extract_audio(
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
         # prepare_filename 给出最终落盘文件名
-        return Path(ydl.prepare_filename(info))
+        final = Path(ydl.prepare_filename(info))
+        logger.info("音频下载完成: id=%s 文件=%s", info.get("id", ""), final.name)
+        return final
 
     return await asyncio.to_thread(_run)
 
@@ -156,10 +163,12 @@ async def extract_subtitle(url: str, bundle: "AssetBundle", source_lang: str = "
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
     if not candidates:
+        logger.warning("字幕提取失败: id=%s 无可用 %s 字幕", bundle.video_id, source_lang)
         raise RuntimeError(
             f"该视频没有可用的 {source_lang} 字幕,建议改用「直接提取音频」模式。"
         )
 
+    logger.info("字幕提取完成: id=%s 文件=%s", bundle.video_id, candidates[0].name)
     return str(candidates[0]), source_lang
 
 

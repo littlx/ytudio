@@ -60,6 +60,10 @@ class TaskState:
     title: str | None = None
     uploader: str | None = None
     task: object | None = None  # asyncio.Task 引用，供取消使用（避免循环引用仅存弱引用亦可，这里存强引用）
+    # 任务参数(持久化供断点重试读取)
+    url: str = ""
+    mode: str = ""
+    voice: str = ""
 
 
 def _emit(state: TaskState, progress: ProgressFn | None) -> None:
@@ -112,27 +116,31 @@ def _save_metadata(result: TaskResult) -> None:
         logger.warning("更新历史索引失败: %s", e)
 
 
-async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None, voice: str = "") -> None:
+async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None, voice: str = "", resume: bool = False) -> None:
     """根据 mode 调度对应流程,捕获异常写入 state。
 
     用信号量串行化:同一时间只跑一个重任务,避免资源耗尽与字幕串台。
     实际处理逻辑由 steps.py 的步骤链执行,这里负责调度、进度外推与异常兜底。
+
+    resume=True 时,从资产包 progress.json 记录的断点继续(跳过已完成步骤)。
     """
     from . import steps  # 延迟导入(steps 依赖本模块的 TaskResult/TaskState)
 
     def emit() -> None:
         _emit(state, progress)
 
+    logger.info("任务 %s 开始: mode=%s url=%s resume=%s", state.task_id, mode, url, resume)
     try:
         async with _sem:
             pipeline = steps.get_pipeline(mode)
             ctx = steps.Ctx(url=url, mode=mode, voice=voice, state=state)
-            result = await pipeline.execute(ctx, emit=emit)
+            result = await pipeline.execute(ctx, emit=emit, resume=resume)
             state.result = result
             # 成功完成:推进到 100% 并保存元数据
             state.stage, state.percent, state.message = "done", 100, "处理完成"
             _emit(state, progress)
             _save_metadata(state.result)
+            logger.info("任务 %s 成功完成: video_id=%s", state.task_id, result.video_id)
     except asyncio.CancelledError:
         # 用户取消:清理可能产生的半成品文件
         state.stage = "error"
@@ -140,12 +148,14 @@ async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None
         state.message = "任务已取消"
         _emit(state, progress)
         _cleanup_partial(state)
+        logger.info("任务 %s 已取消", state.task_id)
         raise
     except Exception as e:  # noqa: BLE001 - 顶层捕获,写入状态供前端展示
         state.stage = "error"
         state.error = str(e)
         state.message = f"处理失败: {e}"
         _emit(state, progress)
+        logger.error("任务 %s 失败: %s", state.task_id, e, exc_info=True)
 
 
 def _pending_video_id(state: TaskState) -> str:

@@ -175,6 +175,16 @@ async def cancel_task(task_id: str, _: None = Depends(verify_token)):
     return await tasks.cancel(task_id)
 
 
+@app.post("/api/retry/{task_id}")
+async def retry_task(task_id: str, _: None = Depends(verify_token)):
+    """从断点重试一个失败的任务。
+
+    读取原任务参数(mode/url/voice),用 resume=True 创建新任务。
+    若资产包有 progress.json,则从断点继续;否则从头开始。
+    """
+    return await tasks.retry(task_id)
+
+
 @app.get("/api/progress/{task_id}")
 async def progress_stream(task_id: str, _: None = Depends(verify_token)):
     """SSE：实时推送任务进度，结束后发送最终状态并关闭。"""

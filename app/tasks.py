@@ -61,6 +61,10 @@ def _state_snapshot(state: TaskState) -> dict:
         "video_id": state.video_id,
         "title": state.title,
         "uploader": state.uploader,
+        # 任务参数(供断点重试读取)
+        "url": state.url,
+        "mode": state.mode,
+        "voice": state.voice,
         "updated_at": time.time(),
     }
 
@@ -146,12 +150,16 @@ def init() -> None:
         logger.info("任务状态恢复:%d 个进行中任务标记为中断", interrupted)
 
 
-async def create(mode: str, url: str, voice: str = "") -> dict:
+async def create(mode: str, url: str, voice: str = "", resume: bool = False) -> dict:
     """创建并启动一个后台处理任务,返回 {"task_id": ...}。
 
     mode / url 已由路由层校验;voice 仅 TTS 模式生效。
+    resume=True 时从资产包 progress.json 记录的断点继续。
     """
     state = TaskState()
+    state.url = url
+    state.mode = mode
+    state.voice = voice
     _tasks[state.task_id] = state
     _queues[state.task_id] = asyncio.Queue()
     # 捕获当前 event loop:yt-dlp 下载进度 hook 在 worker 线程触发,
@@ -165,13 +173,20 @@ async def create(mode: str, url: str, voice: str = "") -> dict:
         loop.call_soon_threadsafe(_put, state.task_id, state)
 
     # 后台运行任务(voice 仅 TTS 模式生效)
-    task = asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice))
+    logger.info("创建任务 %s: mode=%s resume=%s", state.task_id, mode, resume)
+    task = asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice, resume=resume))
     state.task = task  # 存引用供 /api/cancel 取消
     # 持有强引用防止 GC;任务结束延时清理任务表与队列
     _background_tasks.add(task)
 
     def _on_done(t: asyncio.Task) -> None:
         _background_tasks.discard(t)
+        if t.cancelled():
+            logger.info("任务 %s 已取消", state.task_id)
+        elif t.exception():
+            logger.info("任务 %s 终态: error", state.task_id)
+        else:
+            logger.info("任务 %s 终态: done", state.task_id)
         # 终态后延时清理,留窗口给 SSE 重连查看结果
         async def _cleanup():
             await asyncio.sleep(_TASK_RETAIN_SECONDS)
@@ -186,6 +201,27 @@ async def create(mode: str, url: str, voice: str = "") -> dict:
     task.add_done_callback(_on_done)
 
     return {"task_id": state.task_id}
+
+
+async def retry(task_id: str) -> dict:
+    """从断点重试一个失败的任务。
+
+    从持久化的 tasks.json 读取原任务参数(mode/url/voice/video_id),
+    用 resume=True 创建新任务。若原任务的资产包有 progress.json,
+    则从断点继续;否则从头开始(等价于普通重跑)。
+    """
+    snap = _load_persisted().get(task_id)
+    if not snap:
+        raise HTTPException(404, "原任务不存在,无法重试")
+
+    mode = snap.get("mode", "audio")
+    url = snap.get("url", "")
+    voice = snap.get("voice", "")
+    if not url:
+        raise HTTPException(400, "原任务缺少 URL,无法重试")
+
+    logger.info("任务 %s 触发断点重试: mode=%s url=%s", task_id, mode, url)
+    return await create(mode, url, voice=voice, resume=True)
 
 
 async def cancel(task_id: str) -> dict:

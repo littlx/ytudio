@@ -1,8 +1,8 @@
-// 任务处理:提交任务、SSE 进度订阅、取消。
+// 任务处理:提交任务、SSE 进度订阅、取消、断点重试。
 
 import { getState, setState } from "./state.js";
-import { HAS_KEY, startTask, cancelTask, progressStream } from "./api.js";
-import { setProgress, stageLabel, showPreviewCard, updatePreviewCard, hidePreviewCard } from "./views/progress.js";
+import { HAS_KEY, startTask, cancelTask, retryTask, progressStream } from "./api.js";
+import { setProgress, stageLabel, showPreviewCard, updatePreviewCard, hidePreviewCard, showRetryButton, hideRetryButton } from "./views/progress.js";
 import { renderHistory } from "./views/history.js";
 
 let selectedMode = "audio";
@@ -62,9 +62,11 @@ export function initTask(toast) {
     } catch (e) {
       toast(e.message, "err");
     } finally {
-      btn.disabled = false;
-      btn.textContent = "开始处理";
-      currentTaskId = null;
+      // 仅当任务未在重试中(无 currentTaskId)时恢复按钮
+      if (!currentTaskId) {
+        btn.disabled = false;
+        btn.textContent = "开始处理";
+      }
     }
   });
 
@@ -76,11 +78,37 @@ export function initTask(toast) {
     currentTaskId = null;
     document.getElementById("progress").classList.remove("active");
     hidePreviewCard();
+    hideRetryButton();
     const btn = document.getElementById("btn-start");
     btn.disabled = false;
     btn.textContent = "开始处理";
     toast("已取消任务", "warn");
   });
+
+  // 从断点重试失败任务
+  async function retryFromCheckpoint(failedTaskId, toast) {
+    hideRetryButton();
+    const btn = document.getElementById("btn-start");
+    btn.disabled = true;
+    btn.textContent = "重试中…";
+    document.getElementById("progress").classList.add("active");
+    setProgress(0, "从断点重试…");
+    showPreviewCard();
+    try {
+      const newTaskId = await retryTask(failedTaskId);
+      currentTaskId = newTaskId;
+      await subscribe(newTaskId, toast);
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      if (!currentTaskId) {
+        btn.disabled = false;
+        btn.textContent = "开始处理";
+      }
+    }
+  }
+  // 暴露给 subscribe 的 error 分支使用
+  window._retryFromCheckpoint = retryFromCheckpoint;
 }
 
 function subscribe(taskId, toast) {
@@ -96,14 +124,20 @@ function subscribe(taskId, toast) {
 
       if (data.error) {
         toast(data.error, "err");
-        document.getElementById("progress").classList.remove("active");
-        hidePreviewCard();
+        // 失败时保留进度卡片与当前 taskId(供重试),显示重试按钮
+        hideRetryButton();
+        showRetryButton(() => {
+          const failedId = currentTaskId;
+          currentTaskId = null;
+          window._retryFromCheckpoint(failedId, toast);
+        });
         currentES = null; es.close();
         resolve();
         return;
       }
       if (data.result) {
         setProgress(100, "完成");
+        hideRetryButton();
         const r = data.result;
         // 新生成的加入历史并播放
         const { history } = getState();
@@ -115,6 +149,7 @@ function subscribe(taskId, toast) {
         // 立即播放
         window._playIndex(0);
         currentES = null; es.close();
+        currentTaskId = null;
         toast("处理完成,已开始播放", "ok");
         setTimeout(() => {
           document.getElementById("progress").classList.remove("active");

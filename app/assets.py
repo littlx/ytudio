@@ -47,6 +47,16 @@ class AssetBundle:
         return self.dir / "transcript_zh.txt"
 
     @property
+    def progress_path(self) -> Path:
+        """断点续传进度文件:记录已完成步骤 + 关键产出快照。
+
+        与 meta.json 区别:meta.json 是任务成功完成后的终态元数据;
+        progress.json 记录任务进行中的步骤进度,供失败后断点重试。
+        任务成功后会被清除。
+        """
+        return self.dir / "progress.json"
+
+    @property
     def subtitle_path(self) -> Path:
         """字幕实际文件名带语言后缀(如 subtitle.en.json3),这里做模式匹配。"""
         return self.dir / "subtitle.json3"
@@ -113,6 +123,28 @@ class AssetBundle:
         tmp = self.dir / ".meta.json.tmp"
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.meta_path)
+
+    def load_progress(self) -> dict | None:
+        """读取断点续传进度;文件不存在或损坏返回 None。"""
+        if not self.progress_path.exists():
+            return None
+        try:
+            data = json.loads(self.progress_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("读取进度文件失败 %s: %s", self.video_id, e)
+            return None
+
+    def save_progress(self, data: dict) -> None:
+        """原子写入断点续传进度。"""
+        self.ensure_dir()
+        tmp = self.dir / ".progress.json.tmp"
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.progress_path)
+
+    def clear_progress(self) -> None:
+        """删除进度文件(任务成功完成后调用)。"""
+        self.progress_path.unlink(missing_ok=True)
 
     def remove(self) -> list[str]:
         """删除整个资产包目录,返回被删文件名列表(用于前端反馈)。"""

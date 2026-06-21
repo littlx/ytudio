@@ -61,18 +61,27 @@ class Pipeline:
         self.steps = steps
         self._total_weight = sum(s.weight for s in steps)
 
-    async def execute(self, ctx: Ctx, emit: Emit | None = None) -> TaskResult:
+    async def execute(self, ctx: Ctx, emit: Emit | None = None, resume: bool = False) -> TaskResult:
         """顺序执行所有步骤,返回 TaskResult。
 
-        进度按 weight 分配:每步占 [start, start+weight/total*range] 区间。
-        步骤内 report(ratio, msg) 自动映射到该区间,并通过 emit 通知外部。
+        resume=True 时,跳过 progress.json 中记录的已完成步骤,从断点继续。
+        每步成功后向 progress.json 追加完成标记;全部完成后删除 progress.json。
         """
         state = ctx.state
+        task_id = state.task_id
+        # 断点续传:读取已完成步骤索引(用索引而非 stage 名,避免同 stage 步骤冲突)
+        completed_idx: set[int] = set()
+        if resume and ctx.bundle is not None:
+            prog = ctx.bundle.load_progress()
+            if prog:
+                completed_idx = set(prog.get("completed_steps", []))
+                logger.info("任务 %s 断点续传:已完成 %d 个步骤,将从断点继续", task_id, len(completed_idx))
+
         weight_left = self._total_weight
         pct_cursor = _PROGRESS_START
         span = _PROGRESS_END - _PROGRESS_START
 
-        for step in self.steps:
+        for idx, step in enumerate(self.steps):
             step_span = span * step.weight / self._total_weight if self._total_weight else 0
             step_start = pct_cursor
             step_end = pct_cursor + step_span
@@ -92,8 +101,32 @@ class Pipeline:
             state.message = "处理中…"
             if emit is not None:
                 emit()
-            await step.run(ctx, report)
+
+            # 断点续传:跳过已完成步骤,恢复其产出到 ctx
+            if idx in completed_idx:
+                logger.info("任务 %s 跳过已完成步骤: %s(#%d)", task_id, step.stage, idx)
+                _restore_step_output(ctx, step.stage)
+                pct_cursor = step_end if weight_left > 0 else _PROGRESS_END
+                continue
+
+            logger.info("任务 %s 开始步骤: %s", task_id, step.stage)
+            try:
+                await step.run(ctx, report)
+            except Exception as e:
+                logger.error("任务 %s 步骤 %s 失败: %s", task_id, step.stage, e, exc_info=True)
+                raise
+            logger.info("任务 %s 完成步骤: %s", task_id, step.stage)
+
+            # 记录步骤完成到 progress.json(供断点续传,用步骤索引)
+            if ctx.bundle is not None:
+                _mark_step_done(ctx, idx)
+
             pct_cursor = step_end if weight_left > 0 else _PROGRESS_END
+
+        # 全部完成:清除进度文件
+        if ctx.bundle is not None and ctx.bundle.progress_path.exists():
+            ctx.bundle.clear_progress()
+            logger.info("任务 %s 全部步骤完成,已清除进度文件", task_id)
 
         return _build_result(ctx)
 
@@ -104,6 +137,91 @@ def _maybe_emit_meta(state: TaskState, ctx: Ctx) -> None:
         state.video_id = ctx.info.video_id
         state.title = ctx.info.title
         state.uploader = ctx.info.uploader
+
+
+def _restore_step_output(ctx: Ctx, stage: str) -> None:
+    """断点续传跳过已完成步骤时,从 progress.json / 资产包恢复该步产出到 ctx。
+
+    各步骤产出恢复方式见计划文档表格。关键是 ctx.info / ctx.audio_ext
+    / ctx.paragraphs 这三个跨步骤共享的内存态。
+    """
+    assert ctx.bundle is not None
+    prog = ctx.bundle.load_progress() or {}
+
+    if stage == "fetching":
+        # 从 progress.json 恢复 info
+        info_data = prog.get("info")
+        if info_data:
+            ctx.info = yt.VideoInfo(
+                video_id=info_data.get("video_id", ""),
+                title=info_data.get("title", "未知标题"),
+                uploader=info_data.get("uploader", "未知作者"),
+                url=info_data.get("url", ctx.url),
+                duration=float(info_data.get("duration", 0)),
+                subtitle_lang=info_data.get("subtitle_lang", "en"),
+            )
+            _maybe_emit_meta(ctx.state, ctx)
+
+    elif stage == "downloading":
+        # audio_ext 从 progress.json 恢复;音频文件已在 bundle
+        ctx.audio_ext = prog.get("audio_ext", ".mp3")
+
+    elif stage == "subtitling":
+        # 字幕提取/解析步骤。提取步骤产物(字幕文件)已在 bundle 无需恢复;
+        # 解析步骤产物(raw_text)在内存,跳过时从 subtitle 文件重新解析,
+        # 供后续翻译步骤使用。两步同 stage,这里统一处理:确保 raw_text 可用。
+        sub_file = ctx.bundle.subtitle_file()
+        if sub_file is not None and not getattr(ctx, "_raw_text", ""):
+            try:
+                ctx._raw_text = yt.parse_subtitle_to_text(str(sub_file))  # type: ignore[attr-defined]
+            except Exception:
+                pass  # 解析失败不阻塞(后续翻译步骤会兜底报错)
+
+    elif stage == "translating":
+        # paragraphs 从 transcript_zh.txt 按 \\n\\n 还原
+        if ctx.bundle.transcript_path.exists():
+            text = ctx.bundle.transcript_path.read_text(encoding="utf-8")
+            ctx.paragraphs = [p for p in text.split("\n\n") if p.strip()]
+
+    elif stage == "synthesizing":
+        # audio_ext 从 progress.json 恢复;音频文件已在 bundle
+        ctx.audio_ext = prog.get("audio_ext", ".mp3")
+
+
+def _mark_step_done(ctx: Ctx, idx: int) -> None:
+    """把已完成的步骤索引 + 关键产出快照写入 progress.json,供断点续传恢复。
+
+    每步完成后追加 idx 到 completed_steps,并刷新 info/audio_ext 快照
+    (这两个是跨步骤共享、且无法从资产包文件直接恢复的内存态)。
+    用步骤索引(而非 stage 名)作 key,避免同 stage 步骤(如 tts 模式两个
+    subtitling 步骤)冲突。
+    """
+    assert ctx.bundle is not None
+    prog = ctx.bundle.load_progress() or {}
+    # 保留原有字段,补全任务参数(首次写入时)
+    prog.setdefault("task_id", ctx.state.task_id)
+    prog.setdefault("mode", ctx.mode)
+    prog.setdefault("url", ctx.url)
+    prog.setdefault("voice", ctx.voice)
+    completed = list(prog.get("completed_steps", []))
+    if idx not in completed:
+        completed.append(idx)
+    prog["completed_steps"] = completed
+    # info 快照(FetchInfo 产出,重试时恢复 ctx.info)
+    if ctx.info is not None:
+        prog["info"] = {
+            "video_id": ctx.info.video_id,
+            "title": ctx.info.title,
+            "uploader": ctx.info.uploader,
+            "url": ctx.info.url,
+            "duration": ctx.info.duration,
+            "subtitle_lang": ctx.info.subtitle_lang,
+        }
+    # audio_ext 快照(下载/合成产出,重试时恢复 ctx.audio_ext)
+    if ctx.audio_ext:
+        prog["audio_ext"] = ctx.audio_ext
+    prog["updated_at"] = __import__("time").time()
+    ctx.bundle.save_progress(prog)
 
 
 def _build_result(ctx: Ctx) -> TaskResult:

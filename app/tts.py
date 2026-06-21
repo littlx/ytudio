@@ -97,6 +97,7 @@ async def synthesize_speech(
     total = len(paragraphs)
     out_path = bundle.dir / "audio.mp3"
     bundle.ensure_dir()
+    logger.info("开始 TTS 合成: video_id=%s 段数=%d 音色=%s", bundle.video_id, total, voice)
 
     # 单段直接合成,无需拼接
     if total == 1:
@@ -105,12 +106,14 @@ async def synthesize_speech(
         await _synthesize_one(paragraphs[0], voice, out_path)
         if on_progress:
             on_progress(1, 1, "语音合成完成")
+        logger.info("TTS 合成完成(单段): video_id=%s", bundle.video_id)
         return out_path
 
     # 多段:逐段合成到资产包内临时目录,再拼接
     tmp_dir = bundle.tts_parts_dir
     # 幂等准备:若路径以非目录形式残留(异常中断遗留),先清除再创建
     if tmp_dir.exists() and not tmp_dir.is_dir():
+        logger.warning("临时目录路径被文件占用,清除: %s", tmp_dir)
         tmp_dir.unlink()
     tmp_dir.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []
@@ -126,6 +129,7 @@ async def synthesize_speech(
         _concat_mp3(parts, out_path)
         if on_progress:
             on_progress(total, total, "语音合成完成")
+        logger.info("TTS 合成完成(多段): video_id=%s 段数=%d", bundle.video_id, total)
     finally:
         # 清理临时片段目录:用 rmtree 幂等删除,容忍非空目录与异常残留
         shutil.rmtree(tmp_dir, ignore_errors=True)

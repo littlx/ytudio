@@ -60,3 +60,24 @@ export function hidePreviewCard() {
   const card = document.getElementById("download-preview-card");
   if (card) card.style.display = "none";
 }
+
+/** 任务失败后显示「从断点重试」按钮。 */
+export function showRetryButton(onRetry) {
+  const stage = document.querySelector(".p-stage");
+  if (!stage) return;
+  // 避免重复添加
+  if (document.getElementById("p-retry")) return;
+  const btn = document.createElement("button");
+  btn.id = "p-retry";
+  btn.className = "p-cancel";
+  btn.textContent = "从断点重试";
+  btn.style.color = "var(--accent)";
+  btn.addEventListener("click", onRetry);
+  stage.appendChild(btn);
+}
+
+/** 隐藏重试按钮(任务重新开始时调用)。 */
+export function hideRetryButton() {
+  const btn = document.getElementById("p-retry");
+  if (btn) btn.remove();
+}
