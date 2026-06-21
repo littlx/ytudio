@@ -101,3 +101,8 @@ export async function retryTask(taskId) {
   if (!resp.ok) await _parseError(resp, "重试失败");
   return (await resp.json()).task_id;
 }
+
+export async function fetchTasks() {
+  const resp = await authFetch("/api/tasks");
+  return (await resp.json()).tasks;
+}

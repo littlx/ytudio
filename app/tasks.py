@@ -315,3 +315,35 @@ def progress_stream(task_id: str) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+def list_tasks() -> list[dict]:
+    """获取所有进行中、排队中或失败的任务。"""
+    mem_tasks = {}
+    for task_id, state in _tasks.items():
+        mem_tasks[task_id] = {
+            "stage": state.stage,
+            "percent": state.percent,
+            "message": state.message,
+            "error": state.error,
+            "video_id": state.video_id,
+            "title": state.title,
+            "uploader": state.uploader,
+            "url": state.url,
+            "mode": state.mode,
+            "voice": state.voice,
+            "updated_at": time.time(),
+        }
+    
+    persisted = _load_persisted()
+    merged = {**persisted, **mem_tasks}
+    
+    res = []
+    for task_id, snap in merged.items():
+        if snap.get("stage") == "done":
+            continue
+        res.append({
+            "task_id": task_id,
+            **snap
+        })
+    return res

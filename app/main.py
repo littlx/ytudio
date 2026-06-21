@@ -191,6 +191,12 @@ async def progress_stream(task_id: str, _: None = Depends(verify_token)):
     return tasks.progress_stream(task_id)
 
 
+@app.get("/api/tasks")
+async def list_tasks(_: None = Depends(verify_token)):
+    """获取所有进行中、排队中或失败的任务。"""
+    return {"tasks": tasks.list_tasks()}
+
+
 @app.get("/thumb/{video_id}")
 async def get_thumb(video_id: str, _: None = Depends(verify_token)):
     """提供视频缩略图(资产包内 thumb.{ext},替代 i.ytimg.com 外链,支持离线)。"""

@@ -8,7 +8,7 @@ import { initVoices, renderVoices } from "./views/voices.js";
 import { initCookies } from "./views/cookies.js";
 import { initHistoryActions, renderHistory } from "./views/history.js";
 import { initPlayer, restoreLastSession } from "./player.js";
-import { initTask } from "./task.js";
+import { initTask, restoreActiveTasks } from "./task.js";
 
 // ---- Toast(全局提示,供各模块通过 window._toast 调用)----
 let _toastTimer = null;
@@ -59,4 +59,7 @@ initTask(toast);
   } catch (e) {
     console.error("加载历史失败", e);
   }
+
+  // 恢复正在运行或已失败的后台任务
+  restoreActiveTasks(toast);
 })();

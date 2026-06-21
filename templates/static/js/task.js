@@ -1,8 +1,8 @@
 // 任务处理:提交任务、SSE 进度订阅、取消、断点重试。
 
 import { getState, setState } from "./state.js";
-import { HAS_KEY, startTask, cancelTask, retryTask, progressStream } from "./api.js";
-import { setProgress, stageLabel, showPreviewCard, updatePreviewCard, hidePreviewCard, showRetryButton, hideRetryButton } from "./views/progress.js";
+import { HAS_KEY, startTask, cancelTask, retryTask, progressStream, fetchTasks, authUrl } from "./api.js";
+import { stageLabel } from "./views/progress.js";
 import { renderHistory } from "./views/history.js";
 
 let selectedMode = "audio";
@@ -50,9 +50,6 @@ export function initTask(toast) {
     const btn = document.getElementById("btn-start");
     btn.disabled = true;
     btn.textContent = "提交中…";
-    document.getElementById("progress").classList.add("active");
-    setProgress(0, "提交任务…");
-    showPreviewCard();
 
     try {
       const voice = getState().selectedVoice || "";
@@ -64,56 +61,22 @@ export function initTask(toast) {
       trackTask(taskId, toast);
     } catch (e) {
       toast(e.message, "err");
-      document.getElementById("progress").classList.remove("active");
-      hidePreviewCard();
     } finally {
       btn.disabled = false;
       btn.textContent = "开始处理";
     }
   });
 
-  // 取消
-  document.getElementById("p-cancel").addEventListener("click", async () => {
-    if (!currentTaskId) return;
-    const cancelingId = currentTaskId;
-
-    const es = activeES.get(cancelingId);
-    if (es) {
-      es.close();
-      activeES.delete(cancelingId);
-    }
-
-    if (currentTaskId === cancelingId) {
-      document.getElementById("progress").classList.remove("active");
-      hidePreviewCard();
-      hideRetryButton();
-      currentTaskId = null;
-    }
-
-    try {
-      await cancelTask(cancelingId);
-      toast("已取消任务", "warn");
-    } catch (e) {
-      toast(`取消失败: ${e.message}`, "err");
-    }
-  });
-
   // 从断点重试失败任务
   async function retryFromCheckpoint(failedTaskId, toast) {
-    hideRetryButton();
     const btn = document.getElementById("btn-start");
     btn.disabled = true;
     btn.textContent = "重试中…";
-    document.getElementById("progress").classList.add("active");
-    setProgress(0, "从断点重试…");
-    showPreviewCard();
     try {
       const newTaskId = await retryTask(failedTaskId);
       trackTask(newTaskId, toast);
     } catch (e) {
       toast(e.message, "err");
-      document.getElementById("progress").classList.remove("active");
-      hidePreviewCard();
     } finally {
       btn.disabled = false;
       btn.textContent = "开始处理";
@@ -123,37 +86,164 @@ export function initTask(toast) {
   window._retryFromCheckpoint = retryFromCheckpoint;
 }
 
+function getOrCreateTaskCard(taskId, onCancel) {
+  const container = document.getElementById("tasks-container");
+  if (!container) return null;
+
+  let card = document.getElementById(`task-card-${taskId}`);
+  if (!card) {
+    card = document.createElement("div");
+    card.id = `task-card-${taskId}`;
+    card.className = "task-card";
+    card.style = "padding: 14px; background: var(--card-2); border: 1px solid var(--border); border-radius: 12px; animation: fadeIn 0.3s ease; display: flex; flex-direction: column; gap: 12px;";
+    card.innerHTML = `
+      <!-- Meta section -->
+      <div style="display: flex; gap: 14px; align-items: center;">
+        <img class="task-thumb" src="/icon.jpg" style="width: 80px; height: 45px; object-fit: cover; border-radius: 6px; background: var(--card); border: 1px solid var(--border); transition: all 0.3s;" />
+        <div style="flex: 1; min-width: 0;">
+          <div class="task-title" style="font-size: 13px; font-weight: 600; line-height: 1.4; color: var(--text); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;">正在解析视频信息…</div>
+          <div class="task-channel" style="font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">—</div>
+        </div>
+      </div>
+      <!-- Progress section -->
+      <div>
+        <div class="p-stage" style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 6px; gap: 12px;">
+          <span class="msg" style="color: var(--text); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">准备中…</span>
+          <span class="pct" style="color: var(--muted); font-weight: 600; margin-right: 8px;">0%</span>
+          <button class="p-cancel" style="background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; transition: all 0.2s;">取消</button>
+        </div>
+        <div class="p-bar" style="height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; position: relative;">
+          <div class="p-fill" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.2s ease;"></div>
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+
+    const cancelBtn = card.querySelector(".p-cancel");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", () => {
+        if (onCancel) onCancel(taskId);
+      });
+    }
+  }
+  return card;
+}
+
+function showCardRetry(card, onRetry) {
+  const cancelBtn = card.querySelector(".p-cancel") || card.querySelector(".p-retry");
+  if (cancelBtn) {
+    cancelBtn.textContent = "重试";
+    cancelBtn.style.color = "var(--accent)";
+    cancelBtn.className = "p-retry";
+    cancelBtn.style.display = "inline-block";
+    const newBtn = cancelBtn.cloneNode(true);
+    cancelBtn.parentNode.replaceChild(newBtn, cancelBtn);
+    newBtn.addEventListener("click", onRetry);
+  }
+}
+
+function updateTaskCard(taskId, data, onCancel, onRetry) {
+  const card = getOrCreateTaskCard(taskId, onCancel);
+  if (!card) return;
+
+  const thumb = card.querySelector(".task-thumb");
+  const title = card.querySelector(".task-title");
+  const channel = card.querySelector(".task-channel");
+  const msg = card.querySelector(".msg");
+  const pct = card.querySelector(".pct");
+  const fill = card.querySelector(".p-fill");
+
+  if (data.video_id) {
+    if (thumb && !thumb.src.includes(data.video_id)) {
+      thumb.src = authUrl(`/thumb/${data.video_id}`);
+    }
+  }
+  if (data.title && title) {
+    title.textContent = data.title;
+  }
+  if (data.uploader && channel) {
+    channel.textContent = data.uploader;
+  }
+
+  if (data.error) {
+    if (msg) {
+      msg.textContent = `失败: ${data.error}`;
+      msg.style.color = "var(--err)";
+    }
+    if (pct) pct.textContent = "Error";
+    if (fill) {
+      fill.style.width = "100%";
+      fill.style.background = "var(--err)";
+    }
+    if (onRetry) {
+      showCardRetry(card, onRetry);
+    }
+  } else if (data.stage === "done") {
+    if (msg) {
+      msg.textContent = "完成";
+      msg.style.color = "var(--accent)";
+    }
+    if (pct) pct.textContent = "100%";
+    if (fill) {
+      fill.style.width = "100%";
+      fill.style.background = "var(--accent)";
+    }
+    const cancelBtn = card.querySelector(".p-cancel") || card.querySelector(".p-retry");
+    if (cancelBtn) cancelBtn.style.display = "none";
+    setTimeout(() => {
+      card.style.opacity = 0;
+      card.style.transition = "opacity 0.5s ease";
+      setTimeout(() => card.remove(), 500);
+    }, 2000);
+  } else {
+    const label = stageLabel(data.stage);
+    if (msg) {
+      msg.textContent = `${label} · ${data.message || ""}`;
+      msg.style.color = "var(--text)";
+    }
+    const percent = data.percent || 0;
+    if (pct) pct.textContent = `${percent}%`;
+    if (fill) {
+      fill.style.width = `${percent}%`;
+      fill.style.background = "var(--accent)";
+    }
+  }
+}
+
 function trackTask(taskId, toast) {
   const es = progressStream(taskId);
   activeES.set(taskId, es);
   currentTaskId = taskId;
 
-  let taskTitle = "视频";
+  const onCancel = async (tid) => {
+    es.close();
+    activeES.delete(tid);
+    const card = document.getElementById(`task-card-${tid}`);
+    if (card) card.remove();
+
+    try {
+      await cancelTask(tid);
+      toast("已取消任务", "warn");
+    } catch (e) {
+      toast(`取消失败: ${e.message}`, "err");
+    }
+  };
+
+  const onRetry = () => {
+    activeES.delete(taskId);
+    es.close();
+    const card = document.getElementById(`task-card-${taskId}`);
+    if (card) card.remove();
+    window._retryFromCheckpoint(taskId, toast);
+  };
 
   es.onmessage = (ev) => {
     let data;
     try { data = JSON.parse(ev.data); } catch { return; }
 
-    if (data.title) {
-      taskTitle = data.title;
-    }
-
-    if (data.video_id && taskId === currentTaskId) {
-      updatePreviewCard(data);
-    }
+    updateTaskCard(taskId, data, onCancel, onRetry);
 
     if (data.error) {
-      if (taskId === currentTaskId) {
-        toast(data.error, "err");
-        hideRetryButton();
-        showRetryButton(() => {
-          activeES.delete(taskId);
-          es.close();
-          window._retryFromCheckpoint(taskId, toast);
-        });
-      } else {
-        toast(`任务「${taskTitle}」处理失败: ${data.error}`, "err");
-      }
       activeES.delete(taskId);
       es.close();
       return;
@@ -196,37 +286,46 @@ function trackTask(taskId, toast) {
       activeES.delete(taskId);
       es.close();
 
-      if (taskId === currentTaskId) {
-        setProgress(100, "完成");
-        hideRetryButton();
-        toast("处理完成", "ok");
-        setTimeout(() => {
-          if (currentTaskId === taskId) {
-            document.getElementById("progress").classList.remove("active");
-            hidePreviewCard();
-            currentTaskId = null;
-          }
-        }, 1500);
-      } else {
-        toast(`任务「${r.title || taskTitle}」处理完成`, "ok");
-      }
+      updateTaskCard(taskId, { stage: "done", video_id: r.video_id, title: r.title, uploader: r.uploader }, onCancel, onRetry);
+      toast(`任务「${r.title}」处理完成`, "ok");
       return;
-    }
-
-    if (taskId === currentTaskId) {
-      const label = stageLabel(data.stage);
-      setProgress(data.percent || 0, `${label} · ${data.message || ""}`);
     }
   };
 
   es.onerror = () => {
     activeES.delete(taskId);
     es.close();
-    if (taskId === currentTaskId) {
-      toast(`连接中断，后台任务仍在排队或运行中。`, "warn");
-      document.getElementById("progress").classList.remove("active");
-      hidePreviewCard();
-      currentTaskId = null;
+    const card = document.getElementById(`task-card-${taskId}`);
+    if (card) {
+      const msg = card.querySelector(".msg");
+      if (msg) msg.textContent = "连接中断，后台任务仍在排队或运行中。";
+      const pct = card.querySelector(".pct");
+      if (pct) pct.textContent = "Waiting";
     }
   };
+}
+
+export async function restoreActiveTasks(toast) {
+  try {
+    const tasks = await fetchTasks();
+    for (const t of tasks) {
+      if (t.stage === "error") {
+        const onCancel = async (tid) => {
+          const card = document.getElementById(`task-card-${tid}`);
+          if (card) card.remove();
+          await cancelTask(tid);
+        };
+        const onRetry = () => {
+          const card = document.getElementById(`task-card-${t.task_id}`);
+          if (card) card.remove();
+          window._retryFromCheckpoint(t.task_id, toast);
+        };
+        updateTaskCard(t.task_id, t, onCancel, onRetry);
+      } else {
+        trackTask(t.task_id, toast);
+      }
+    }
+  } catch (e) {
+    console.error("恢复后台任务失败", e);
+  }
 }
