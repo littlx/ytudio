@@ -175,6 +175,13 @@ async def cancel_task(task_id: str, _: None = Depends(verify_token)):
     return await tasks.cancel(task_id)
 
 
+@app.delete("/api/tasks/{task_id}")
+async def delete_task_route(task_id: str, _: None = Depends(verify_token)):
+    """取消并彻底删除任务（支持排队中、运行中或失败的任务）。"""
+    tasks.delete_task(task_id)
+    return {"ok": True}
+
+
 @app.post("/api/retry/{task_id}")
 async def retry_task(task_id: str, _: None = Depends(verify_token)):
     """从断点重试一个失败的任务。

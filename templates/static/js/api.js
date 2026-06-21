@@ -106,3 +106,9 @@ export async function fetchTasks() {
   const resp = await authFetch("/api/tasks");
   return (await resp.json()).tasks;
 }
+
+export async function deleteTask(taskId) {
+  const resp = await authFetch(`/api/tasks/${taskId}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error("删除失败");
+  return resp.json();
+}

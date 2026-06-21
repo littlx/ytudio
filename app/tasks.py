@@ -347,3 +347,14 @@ def list_tasks() -> list[dict]:
             **snap
         })
     return res
+
+
+def delete_task(task_id: str) -> None:
+    """取消运行中的任务并从内存和持久化数据中删除。"""
+    state = _tasks.get(task_id)
+    if state and state.task and not state.task.done():
+        state.task.cancel()
+    
+    _tasks.pop(task_id, None)
+    _queues.pop(task_id, None)
+    _remove_persisted(task_id)

@@ -1,7 +1,7 @@
 // 任务处理:提交任务、SSE 进度订阅、取消、断点重试。
 
 import { getState, setState } from "./state.js";
-import { HAS_KEY, startTask, cancelTask, retryTask, progressStream, fetchTasks, authUrl } from "./api.js";
+import { HAS_KEY, startTask, deleteTask, retryTask, progressStream, fetchTasks, authUrl } from "./api.js";
 import { stageLabel } from "./views/progress.js";
 import { renderHistory } from "./views/history.js";
 
@@ -129,19 +129,6 @@ function getOrCreateTaskCard(taskId, onCancel) {
   return card;
 }
 
-function showCardRetry(card, onRetry) {
-  const cancelBtn = card.querySelector(".p-cancel") || card.querySelector(".p-retry");
-  if (cancelBtn) {
-    cancelBtn.textContent = "重试";
-    cancelBtn.style.color = "var(--accent)";
-    cancelBtn.className = "p-retry";
-    cancelBtn.style.display = "inline-block";
-    const newBtn = cancelBtn.cloneNode(true);
-    cancelBtn.parentNode.replaceChild(newBtn, cancelBtn);
-    newBtn.addEventListener("click", onRetry);
-  }
-}
-
 function updateTaskCard(taskId, data, onCancel, onRetry) {
   const card = getOrCreateTaskCard(taskId, onCancel);
   if (!card) return;
@@ -175,8 +162,24 @@ function updateTaskCard(taskId, data, onCancel, onRetry) {
       fill.style.width = "100%";
       fill.style.background = "var(--err)";
     }
-    if (onRetry) {
-      showCardRetry(card, onRetry);
+    
+    // 配置错误状态下的按钮：同时显示“重试”和“删除”
+    const pStage = card.querySelector(".p-stage");
+    const cancelBtn = card.querySelector(".p-cancel");
+    
+    if (cancelBtn) {
+      cancelBtn.textContent = "删除";
+    }
+    
+    if (pStage && !card.querySelector(".p-retry")) {
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "p-retry";
+      retryBtn.textContent = "重试";
+      retryBtn.style = "background: transparent; border: 1px solid var(--border); color: var(--accent); border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; transition: all 0.2s; margin-right: 6px;";
+      retryBtn.addEventListener("click", () => {
+        if (onRetry) onRetry();
+      });
+      pStage.insertBefore(retryBtn, cancelBtn);
     }
   } else if (data.stage === "done") {
     if (msg) {
@@ -190,6 +193,9 @@ function updateTaskCard(taskId, data, onCancel, onRetry) {
     }
     const cancelBtn = card.querySelector(".p-cancel") || card.querySelector(".p-retry");
     if (cancelBtn) cancelBtn.style.display = "none";
+    const retryBtn = card.querySelector(".p-retry");
+    if (retryBtn) retryBtn.style.display = "none";
+    
     setTimeout(() => {
       card.style.opacity = 0;
       card.style.transition = "opacity 0.5s ease";
@@ -222,10 +228,10 @@ function trackTask(taskId, toast) {
     if (card) card.remove();
 
     try {
-      await cancelTask(tid);
-      toast("已取消任务", "warn");
+      await deleteTask(tid);
+      toast("已删除任务", "warn");
     } catch (e) {
-      toast(`取消失败: ${e.message}`, "err");
+      toast(`删除失败: ${e.message}`, "err");
     }
   };
 
@@ -309,19 +315,22 @@ export async function restoreActiveTasks(toast) {
   try {
     const tasks = await fetchTasks();
     for (const t of tasks) {
+      const onCancel = async (tid) => {
+        const card = document.getElementById(`task-card-${tid}`);
+        if (card) card.remove();
+        await deleteTask(tid);
+      };
+      const onRetry = () => {
+        const card = document.getElementById(`task-card-${t.task_id}`);
+        if (card) card.remove();
+        window._retryFromCheckpoint(t.task_id, toast);
+      };
+      
       if (t.stage === "error") {
-        const onCancel = async (tid) => {
-          const card = document.getElementById(`task-card-${tid}`);
-          if (card) card.remove();
-          await cancelTask(tid);
-        };
-        const onRetry = () => {
-          const card = document.getElementById(`task-card-${t.task_id}`);
-          if (card) card.remove();
-          window._retryFromCheckpoint(t.task_id, toast);
-        };
         updateTaskCard(t.task_id, t, onCancel, onRetry);
       } else {
+        // 先创建卡片渲染初始拉取到的状态，并传入相应的onCancel与onRetry
+        updateTaskCard(t.task_id, t, onCancel, onRetry);
         trackTask(t.task_id, toast);
       }
     }
