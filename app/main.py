@@ -1,27 +1,25 @@
-"""FastAPI 应用入口：路由 + SSE 进度推送。"""
+"""FastAPI 应用入口：路由 + 依赖校验。
+
+路由按职责转调子模块：
+- 任务/SSE 生命周期 → app.tasks
+- cookies 校验与来源 → app.cookies
+- 音色列表与标签 → app.voices
+- 静态资源（图标/manifest/CSS/JS/SW）→ app.static（末尾挂载）
+"""
 from __future__ import annotations
 
-import asyncio
-import json
 import secrets
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from . import config, history_store, pipeline
-from .pipeline import TaskState
+from . import config, cookies, history_store, pipeline, static, tasks, voices
 
-# 全局任务表：task_id -> TaskState（含一个进度队列供 SSE 订阅）
-_tasks: dict[str, TaskState] = {}
-_queues: dict[str, asyncio.Queue] = {}
-# 后台任务引用集合：防止「发射后不管」的任务被 GC 回收导致中途消失
-_background_tasks: set[asyncio.Task] = set()
-# 任务终态后保留时长（秒），供 SSE 重连查看结果，之后清理释放内存
-_TASK_RETAIN_SECONDS = 300
+templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
 
 
 @asynccontextmanager
@@ -36,7 +34,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ytudio — YouTube → 中文音频", lifespan=lifespan)
-templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
 
 
 async def verify_token(request: Request) -> None:
@@ -70,68 +67,9 @@ async def index(request: Request):
             "has_deepseek_key": config.has_deepseek_key(),
             "has_cookies": config.cookies_file_to_use() != "",
             "default_voice": config.TTS_VOICE,
-            "default_voice_label": _voice_label(config.TTS_VOICE),
+            "default_voice_label": voices.voice_label(config.TTS_VOICE),
         },
     )
-
-
-def _voice_label(name: str) -> str:
-    """音色名 → 简短标签（用于前端徽章初始值，避免硬编码）。"""
-    for v in ZH_VOICES:
-        if v["name"] == name:
-            return v["label"].split(" · ")[0]
-    return name
-
-
-@app.get("/manifest.json")
-async def get_manifest():
-    return FileResponse(config.TEMPLATES_DIR / "manifest.json", media_type="application/json")
-
-
-@app.get("/sw.js")
-async def get_sw():
-    return FileResponse(
-        config.TEMPLATES_DIR / "sw.js",
-        media_type="application/javascript",
-        headers={"Service-Worker-Allowed": "/"},
-    )
-
-
-@app.get("/icon.jpg")
-async def get_icon():
-    return FileResponse(config.TEMPLATES_DIR / "icon.jpg", media_type="image/jpeg")
-
-
-@app.get("/icon-192.png")
-async def get_icon_192():
-    return FileResponse(config.TEMPLATES_DIR / "icon-192.png", media_type="image/png")
-
-
-@app.get("/icon-512.png")
-async def get_icon_512():
-    return FileResponse(config.TEMPLATES_DIR / "icon-512.png", media_type="image/png")
-
-
-@app.get("/icon-maskable-512.png")
-async def get_icon_maskable():
-    return FileResponse(config.TEMPLATES_DIR / "icon-maskable-512.png", media_type="image/png")
-
-
-# 缩略图支持的扩展名（yt-dlp 落盘的实际格式）
-_THUMB_EXTS = (".jpg", ".webp", ".png")
-
-
-@app.get("/thumb/{video_id}")
-async def get_thumb(video_id: str, _: None = Depends(verify_token)):
-    """提供视频缩略图（本地存储，替代 i.ytimg.com 外链，支持离线）。"""
-    if Path(video_id).name != video_id:
-        raise HTTPException(400, "非法 video_id")
-    for ext in _THUMB_EXTS:
-        path = config.OUTPUT_DIR / f"{video_id}{ext}"
-        if path.exists() and path.is_file():
-            return FileResponse(path, media_type=f"image/{ext.lstrip('.')}")
-    # 兜底：未找到缩略图，返回默认图标
-    return FileResponse(config.TEMPLATES_DIR / "icon.jpg", media_type="image/jpeg")
 
 
 @app.get("/api/status")
@@ -139,39 +77,20 @@ async def api_status(_: None = Depends(verify_token)):
     return {
         "has_deepseek_key": config.has_deepseek_key(),
         "has_cookies": config.cookies_file_to_use() != "",
-        "cookies_source": _cookies_source(),
+        "cookies_source": cookies.source(),
         "default_voice": config.TTS_VOICE,
     }
-
-
-# edge-tts 可用中文音色（名称/性别/地区/方言备注）
-ZH_VOICES = [
-    {"name": "zh-CN-XiaoxiaoNeural", "gender": "女", "label": "晓晓 · 普通话（自然，推荐）"},
-    {"name": "zh-CN-XiaoyiNeural", "gender": "女", "label": "晓伊 · 普通话"},
-    {"name": "zh-CN-YunxiNeural", "gender": "男", "label": "云希 · 普通话（自然）"},
-    {"name": "zh-CN-YunyangNeural", "gender": "男", "label": "云扬 · 普通话（新闻播报）"},
-    {"name": "zh-CN-YunjianNeural", "gender": "男", "label": "云健 · 普通话"},
-    {"name": "zh-CN-YunxiaNeural", "gender": "男", "label": "云夏 · 普通话（童声）"},
-    {"name": "zh-CN-liaoning-XiaobeiNeural", "gender": "女", "label": "晓贝 · 东北话"},
-    {"name": "zh-CN-shaanxi-XiaoniNeural", "gender": "女", "label": "晓妮 · 陕西话"},
-    {"name": "zh-HK-HiuGaaiNeural", "gender": "女", "label": "曉佳 · 粤语"},
-    {"name": "zh-HK-HiuMaanNeural", "gender": "女", "label": "曉曼 · 粤语"},
-    {"name": "zh-HK-WanLungNeural", "gender": "男", "label": "雲龍 · 粤语"},
-    {"name": "zh-TW-HsiaoChenNeural", "gender": "女", "label": "曉臻 · 台湾国语"},
-    {"name": "zh-TW-HsiaoYuNeural", "gender": "女", "label": "曉雨 · 台湾国语"},
-    {"name": "zh-TW-YunJheNeural", "gender": "男", "label": "雲哲 · 台湾国语"},
-]
 
 
 @app.get("/api/voices")
 async def voices_list(_: None = Depends(verify_token)):
     """返回可用中文音色列表。"""
-    return {"voices": ZH_VOICES, "default": config.TTS_VOICE}
+    return {"voices": voices.ZH_VOICES, "default": config.TTS_VOICE}
 
 
 @app.get("/api/voice/preview/{voice}")
 async def voice_preview(voice: str, _: None = Depends(verify_token)):
-    """生成一句话试听音频（缓存到 data/preview_<voice>.mp3）。"""
+    """生成一句话试听音频（缓存到 data/previews/<voice>.mp3）。"""
     import edge_tts
     if Path(voice).name != voice or ".." in voice or not voice.startswith("zh-"):
         raise HTTPException(400, "非法音色名")
@@ -186,51 +105,12 @@ async def voice_preview(voice: str, _: None = Depends(verify_token)):
     return FileResponse(path, media_type="audio/mpeg", filename=f"{voice}.mp3")
 
 
-def _cookies_source() -> str:
-    """返回 cookies 来源描述，供界面展示。"""
-    if config.COOKIES_FILE:
-        return "env"
-    if config.COOKIES_FROM_BROWSER:
-        return config.COOKIES_FROM_BROWSER
-    if config.COOKIES_RUNTIME_FILE.exists():
-        return "upload"
-    return ""
-
-
-# Netscape cookies.txt 头部标识
-_NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
-
-
-def _validate_netscape_cookies(content: str) -> tuple[bool, str, int]:
-    """校验 cookies 文本是否为合法 Netscape 格式。返回 (是否有效, 信息, cookie 行数)。"""
-    if not content.strip():
-        return False, "内容为空", 0
-    lines = content.splitlines()
-    cookie_lines = 0
-    has_header = False
-    for line in lines:
-        s = line.strip()
-        if not s:
-            continue
-        if s.startswith("#"):
-            if _NETSCAPE_HEADER in s:
-                has_header = True
-            continue
-        # 非注释行：应为 7 个 tab 分隔字段
-        parts = line.split("\t")
-        if len(parts) >= 7:
-            cookie_lines += 1
-    if cookie_lines == 0:
-        return False, "未找到有效的 cookie 行（每行需 7 个 tab 分隔字段）", 0
-    return True, (f"包含 {cookie_lines} 条 cookie" + ("（含 Netscape 头）" if has_header else "")), cookie_lines
-
-
 @app.get("/api/cookies")
 async def cookies_get(_: None = Depends(verify_token)):
     """返回 cookies 状态（不返回内容，安全考虑）。"""
     return {
         "has_cookies": config.cookies_file_to_use() != "",
-        "source": _cookies_source(),
+        "source": cookies.source(),
     }
 
 
@@ -238,12 +118,12 @@ async def cookies_get(_: None = Depends(verify_token)):
 async def cookies_save(content: str = Form(...), _: None = Depends(verify_token)):
     """保存用户粘贴/上传的 cookies.txt 内容（Netscape 格式）。"""
     content = content.strip()
-    ok, msg, count = _validate_netscape_cookies(content)
+    ok, msg, count = cookies.validate(content)
     if not ok:
         raise HTTPException(400, f"cookies 格式无效：{msg}")
     # 若未含 Netscape 头，补上
-    if _NETSCAPE_HEADER not in content:
-        content = _NETSCAPE_HEADER + "\n" + content
+    if cookies.NETSCAPE_HEADER not in content:
+        content = cookies.NETSCAPE_HEADER + "\n" + content
     config.COOKIES_RUNTIME_FILE.write_text(content, encoding="utf-8")
     return {"ok": True, "message": msg, "count": count, "source": "upload"}
 
@@ -254,22 +134,6 @@ async def cookies_clear(_: None = Depends(verify_token)):
     if config.COOKIES_RUNTIME_FILE.exists():
         config.COOKIES_RUNTIME_FILE.unlink()
     return {"ok": True, "has_cookies": config.cookies_file_to_use() != ""}
-
-
-def _put(task_id: str, state: TaskState) -> None:
-    """把当前状态推入对应 SSE 队列。"""
-    q = _queues.get(task_id)
-    if q is not None:
-        q.put_nowait({
-            "stage": state.stage,
-            "percent": state.percent,
-            "message": state.message,
-            "error": state.error,
-            "done": state.stage in ("done", "error"),
-            "video_id": state.video_id,
-            "title": state.title,
-            "uploader": state.uploader,
-        })
 
 
 @app.post("/api/process")
@@ -290,106 +154,36 @@ async def process(
         raise HTTPException(
             400, "字幕翻译模式需要 DEEPSEEK_API_KEY，请在 .env 中配置后重启。"
         )
-
-    state = TaskState()
-    _tasks[state.task_id] = state
-    _queues[state.task_id] = asyncio.Queue()
-    # 捕获当前 event loop：yt-dlp 下载进度 hook 在 worker 线程触发，
-    # 需用 call_soon_threadsafe 把队列写入调度回 loop 线程，避免跨线程操作 asyncio.Queue
-    loop = asyncio.get_running_loop()
-
-    def progress(stage: str, percent: int, message: str) -> None:
-        state.stage = stage
-        state.percent = percent
-        state.message = message
-        loop.call_soon_threadsafe(_put, state.task_id, state)
-
-    # 后台运行任务（voice 仅 TTS 模式生效）
-    task = asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice))
-    state.task = task  # 存引用供 /api/cancel 取消
-    # 持有强引用防止 GC；任务结束延时清理任务表与队列
-    _background_tasks.add(task)
-
-    def _on_done(t: asyncio.Task) -> None:
-        _background_tasks.discard(t)
-        # 终态后延时清理，留窗口给 SSE 重连查看结果
-        async def _cleanup():
-            await asyncio.sleep(_TASK_RETAIN_SECONDS)
-            _tasks.pop(state.task_id, None)
-            _queues.pop(state.task_id, None)
-        cleanup_task = asyncio.create_task(_cleanup())
-        # 清理任务也纳入强引用集合，防止 fire-and-forget 被 GC 中途取消
-        _background_tasks.add(cleanup_task)
-        cleanup_task.add_done_callback(lambda ct: _background_tasks.discard(ct))
-
-    task.add_done_callback(_on_done)
-
-    return {"task_id": state.task_id}
+    return await tasks.create(mode, url, voice=voice)
 
 
 @app.post("/api/cancel/{task_id}")
 async def cancel_task(task_id: str, _: None = Depends(verify_token)):
     """取消正在运行的任务。"""
-    state = _tasks.get(task_id)
-    if not state:
-        raise HTTPException(404, "任务不存在")
-    task = state.task
-    if task is None or task.done():
-        return {"ok": True, "already_done": True}
-    task.cancel()
-    return {"ok": True, "cancelled": True}
+    return await tasks.cancel(task_id)
 
 
 @app.get("/api/progress/{task_id}")
 async def progress_stream(task_id: str, _: None = Depends(verify_token)):
     """SSE：实时推送任务进度，结束后发送最终状态并关闭。"""
-    if task_id not in _tasks:
-        raise HTTPException(404, "任务不存在")
+    return tasks.progress_stream(task_id)
 
-    queue = _queues.setdefault(task_id, asyncio.Queue())
-    state = _tasks[task_id]
 
-    async def event_generator():
-        # 先补发当前状态
-        yield f"data: {json.dumps({'stage': state.stage, 'percent': state.percent, 'message': state.message, 'error': state.error, 'done': state.stage in ('done', 'error'), 'video_id': state.video_id, 'title': state.title, 'uploader': state.uploader})}\n\n"
-        try:
-            while True:
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    # 心跳保活
-                    yield ": keep-alive\n\n"
-                    continue
-                yield f"data: {json.dumps(msg)}\n\n"
-                if msg.get("done"):
-                    # 发送最终结果摘要
-                    if state.result:
-                        final = {
-                            "done": True,
-                            "stage": state.stage,
-                            "error": state.error,
-                            "result": {
-                                "title": state.result.title,
-                                "uploader": state.result.uploader,
-                                "mode": state.result.mode,
-                                "audio_url": state.result.audio_url,
-                                "audio_name": state.result.audio_path.name,
-                            },
-                        }
-                        yield f"data: {json.dumps(final)}\n\n"
-                    break
-        finally:
-            _queues.pop(task_id, None)
+# 缩略图支持的扩展名（yt-dlp 落盘的实际格式）
+_THUMB_EXTS = (".jpg", ".webp", ".png")
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+
+@app.get("/thumb/{video_id}")
+async def get_thumb(video_id: str, _: None = Depends(verify_token)):
+    """提供视频缩略图（本地存储，替代 i.ytimg.com 外链，支持离线）。"""
+    if Path(video_id).name != video_id:
+        raise HTTPException(400, "非法 video_id")
+    for ext in _THUMB_EXTS:
+        path = config.OUTPUT_DIR / f"{video_id}{ext}"
+        if path.exists() and path.is_file():
+            return FileResponse(path, media_type=f"image/{ext.lstrip('.')}")
+    # 兜底：未找到缩略图，返回默认图标
+    return FileResponse(config.TEMPLATES_DIR / "icon.jpg", media_type="image/jpeg")
 
 
 _MIME_BY_EXT = {
@@ -514,3 +308,6 @@ async def delete_history_item(name: str, _: None = Depends(verify_token)):
 
     return {"ok": True, "deleted": deleted_files}
 
+
+# 静态资源（图标/manifest/CSS/JS/SW）兜底挂载，必须放在所有动态路由之后
+static.mount_static(app)

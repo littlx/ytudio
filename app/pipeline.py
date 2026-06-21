@@ -6,10 +6,11 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Callable
 
-from . import config, translate, tts, yt
+from . import config, history_store, translate, tts, yt
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,6 @@ def _save_metadata(result: TaskResult) -> None:
     - {audio_name}.json：单条元数据（兼容旧版读取逻辑）
     - data/history.json：集中式历史索引（新版前端读取源）
     """
-    from datetime import datetime, timezone
     meta_path = result.audio_path.with_suffix(".json")
     # 文件大小与生成时间
     try:
@@ -212,7 +212,6 @@ def _save_metadata(result: TaskResult) -> None:
         logger.warning("保存元数据失败: %s", e)
     # 同步更新历史索引（data/history.json）
     try:
-        from . import history_store
         history_store.upsert(data)
     except Exception as e:
         logger.warning("更新历史索引失败: %s", e)
