@@ -17,18 +17,25 @@ export function initTask(toast) {
   const modeAudio = document.getElementById("mode-audio");
   const modeTts = document.getElementById("mode-tts");
 
-  modeAudio.addEventListener("click", () => setMode("audio"));
-  modeTts.addEventListener("click", () => {
-    if (!HAS_KEY) { toast("字幕翻译模式需要 DEEPSEEK_API_KEY,请先在 .env 配置并重启。", "err"); return; }
-    setMode("tts");
-  });
-  if (!HAS_KEY) modeTts.classList.add("disabled");
-
   function selectMode(m) {
     setMode(m);
     modeAudio.classList.toggle("selected", m === "audio");
     modeTts.classList.toggle("selected", m === "tts");
+    // 同步 radio 勾选状态(供表单语义与可访问性)
+    modeAudio.querySelector('input[type="radio"]').checked = (m === "audio");
+    modeTts.querySelector('input[type="radio"]').checked = (m === "tts");
   }
+
+  modeAudio.addEventListener("click", () => selectMode("audio"));
+  modeTts.addEventListener("click", () => {
+    if (!HAS_KEY) {
+      toast("字幕翻译模式需要 DEEPSEEK_API_KEY,请先在 .env 配置并重启。", "err");
+      return;
+    }
+    selectMode("tts");
+  });
+  if (!HAS_KEY) modeTts.classList.add("disabled");
+
   // 初始选中 audio
   selectMode("audio");
 
