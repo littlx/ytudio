@@ -19,10 +19,9 @@ ProgressFn = Callable[[str, int, str], None]
 MODE_AUDIO = "audio"          # 直接提取音频
 MODE_SUBTITLE_TTS = "tts"     # 字幕翻译 → 中文 TTS
 
-# 串行信号量：yt-dlp 下载、DeepSeek 翻译、edge-tts 合成均为重资源操作，
-# 并发多个会耗尽带宽/内存，且字幕文件按 video_id 定位也需避免并发干扰。
-# 同一时间只允许一个任务执行核心流程。
-_sem = asyncio.Semaphore(1)
+# 任务级完全并发:不再用 Semaphore 串行化整条 pipeline。
+# 真正的外部资源限流(yt-dlp / DeepSeek / edge-tts)由 app/concurrency.py 在
+# 各子模块入口处按资源类型独立把守,允许多任务在不同阶段并行。
 
 
 @dataclass
@@ -119,8 +118,10 @@ def _save_metadata(result: TaskResult) -> None:
 async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None, voice: str = "", resume: bool = False) -> None:
     """根据 mode 调度对应流程,捕获异常写入 state。
 
-    用信号量串行化:同一时间只跑一个重任务,避免资源耗尽与字幕串台。
-    实际处理逻辑由 steps.py 的步骤链执行,这里负责调度、进度外推与异常兜底。
+    任务级并发:不再串行,多个任务可同时进入 pipeline。
+    重资源调用(yt-dlp/DeepSeek/edge-tts)由 app/concurrency.py 在子模块入口
+    各自限流,被外部资源闸阀挡住时会通过 on_wait 把"等待 xxx 资源空闲…"
+    透传到 SSE message。实际处理逻辑由 steps.py 的步骤链执行。
 
     resume=True 时,从资产包 progress.json 记录的断点继续(跳过已完成步骤)。
     """
@@ -131,20 +132,15 @@ async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None
 
     logger.info("任务 %s 开始: mode=%s url=%s resume=%s", state.task_id, mode, url, resume)
     try:
-        if _sem.locked():
-            state.stage = "pending"
-            state.message = "排队中，等待前一个任务完成..."
-            emit()
-        async with _sem:
-            pipeline = steps.get_pipeline(mode)
-            ctx = steps.Ctx(url=url, mode=mode, voice=voice, state=state)
-            result = await pipeline.execute(ctx, emit=emit, resume=resume)
-            state.result = result
-            # 成功完成:推进到 100% 并保存元数据
-            state.stage, state.percent, state.message = "done", 100, "处理完成"
-            _emit(state, progress)
-            _save_metadata(state.result)
-            logger.info("任务 %s 成功完成: video_id=%s", state.task_id, result.video_id)
+        pipeline = steps.get_pipeline(mode)
+        ctx = steps.Ctx(url=url, mode=mode, voice=voice, state=state)
+        result = await pipeline.execute(ctx, emit=emit, resume=resume)
+        state.result = result
+        # 成功完成:推进到 100% 并保存元数据
+        state.stage, state.percent, state.message = "done", 100, "处理完成"
+        _emit(state, progress)
+        _save_metadata(state.result)
+        logger.info("任务 %s 成功完成: video_id=%s", state.task_id, result.video_id)
     except asyncio.CancelledError:
         # 用户取消:清理可能产生的半成品文件
         state.stage = "error"

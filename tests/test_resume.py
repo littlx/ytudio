@@ -61,11 +61,11 @@ async def test_resume_skips_completed_steps(isolated_dirs):
     # 第一轮:让 fetch_info + extract_subtitle + parse_subtitle 成功,翻译失败
     call_log = []
 
-    async def failing_translate(raw_text, on_progress=None):
+    async def failing_translate(raw_text, on_progress=None, **kwargs):
         call_log.append("translate_called")
         raise RuntimeError("翻译服务不可用")
 
-    async def fake_extract_sub(url, bundle, source_lang="en"):
+    async def fake_extract_sub(url, bundle, source_lang="en", **kwargs):
         bundle.ensure_dir()
         (bundle.dir / f"subtitle.{bundle.video_id}.{source_lang}.json3").write_text("{}")
         return ("sub", source_lang)
@@ -97,7 +97,7 @@ async def test_resume_skips_completed_steps(isolated_dirs):
     ctx2.bundle = ctx.bundle
 
     fetch_call_count = 0
-    async def counting_fetch(url, bundle=None, download_thumb=True):
+    async def counting_fetch(url, bundle=None, download_thumb=True, **kwargs):
         nonlocal fetch_call_count
         fetch_call_count += 1
         return _fake_info()
@@ -148,7 +148,7 @@ async def test_resume_restores_paragraphs_from_transcript(isolated_dirs):
 
     # resume:应跳过前 3 步,直接到 synthesizing
     synthesize_call_args = {}
-    async def capture_synthesize(paragraphs, b, voice=None, on_progress=None):
+    async def capture_synthesize(paragraphs, b, voice=None, on_progress=None, **kwargs):
         synthesize_call_args["paragraphs"] = paragraphs
         synthesize_call_args["voice"] = voice
         return b.dir / "audio.mp3"
@@ -178,7 +178,7 @@ async def test_resume_without_progress_starts_from_beginning(isolated_dirs):
     audio_file.write_bytes(b"fake")
 
     fetch_called = False
-    async def check_fetch(url, bundle=None, download_thumb=True):
+    async def check_fetch(url, bundle=None, download_thumb=True, **kwargs):
         nonlocal fetch_called
         fetch_called = True
         return _fake_info()
@@ -210,7 +210,7 @@ async def test_no_resume_always_runs_all_steps(isolated_dirs):
     audio_file.write_bytes(b"fake")
 
     fetch_called = False
-    async def check_fetch(url, bundle=None, download_thumb=True):
+    async def check_fetch(url, bundle=None, download_thumb=True, **kwargs):
         nonlocal fetch_called
         fetch_called = True
         return _fake_info()

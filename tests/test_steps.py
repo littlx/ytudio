@@ -68,7 +68,7 @@ async def test_tts_pipeline_stage_order(isolated_dirs):
     audio_file = config.OUTPUT_DIR / "tts.mp3"
     audio_file.write_bytes(b"fake")
 
-    async def fake_extract_sub(url, bundle, source_lang="en"):
+    async def fake_extract_sub(url, bundle, source_lang="en", **kwargs):
         bundle.ensure_dir()
         (bundle.dir / f"subtitle.{bundle.video_id}.{source_lang}.json3").write_text("{}")
         return (str(bundle.dir / f"subtitle.{bundle.video_id}.{source_lang}.json3"), source_lang)
@@ -99,7 +99,7 @@ async def test_tts_pipeline_progress_monotonic(isolated_dirs):
     audio_file = config.OUTPUT_DIR / "tts.mp3"
     audio_file.write_bytes(b"fake")
 
-    async def fake_extract_sub(url, bundle, source_lang="en"):
+    async def fake_extract_sub(url, bundle, source_lang="en", **kwargs):
         bundle.ensure_dir()
         (bundle.dir / f"subtitle.{bundle.video_id}.{source_lang}.json3").write_text("{}")
         return ("sub", source_lang)

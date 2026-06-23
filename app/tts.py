@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import tempfile
@@ -14,7 +15,7 @@ from typing import Callable
 
 import edge_tts
 
-from . import config
+from . import concurrency, config
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,14 @@ async def synthesize_speech(
     bundle: "AssetBundle",
     voice: str | None = None,
     on_progress: "ProgressFn | None" = None,
+    on_wait: "Callable[[str], None] | None" = None,
 ) -> Path:
     """把中文段落列表合成为单个 mp3 写入资产包 audio.mp3。
 
     - 逐段用 edge-tts 流式合成到资产包内临时片段目录;
     - 再用 ffmpeg concat 拼接(无重编码);
     - on_progress(done, total, msg) 按段回报合成进度。
+    - on_wait 用于在 TTS 信号量被占满时透传"等待 TTS 资源…"文案。
     - 返回最终音频路径(bundle.dir/audio.mp3)。
 
     单段过长仍可能慢,但段落由模型切分(单段约 ≤300 字),基本不会超时。
@@ -99,38 +102,41 @@ async def synthesize_speech(
     bundle.ensure_dir()
     logger.info("开始 TTS 合成: video_id=%s 段数=%d 音色=%s", bundle.video_id, total, voice)
 
-    # 单段直接合成,无需拼接
-    if total == 1:
-        if on_progress:
-            on_progress(0, 1, "合成中文语音…")
-        await _synthesize_one(paragraphs[0], voice, out_path)
-        if on_progress:
-            on_progress(1, 1, "语音合成完成")
-        logger.info("TTS 合成完成(单段): video_id=%s", bundle.video_id)
-        return out_path
-
-    # 多段:逐段合成到资产包内临时目录,再拼接
-    tmp_dir = bundle.tts_parts_dir
-    # 幂等准备:若路径以非目录形式残留(异常中断遗留),先清除再创建
-    if tmp_dir.exists() and not tmp_dir.is_dir():
-        logger.warning("临时目录路径被文件占用,清除: %s", tmp_dir)
-        tmp_dir.unlink()
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    parts: list[Path] = []
-    try:
-        for i, para in enumerate(paragraphs, 1):
+    async with concurrency.slot("tts", on_wait=on_wait):
+        # 单段直接合成,无需拼接
+        if total == 1:
             if on_progress:
-                on_progress(i - 1, total, f"合成第 {i}/{total} 段…")
-            part = tmp_dir / f"part_{i:05d}.mp3"
-            await _synthesize_one(para, voice, part)
-            parts.append(part)
-        if on_progress:
-            on_progress(total, total, "拼接音频…")
-        _concat_mp3(parts, out_path)
-        if on_progress:
-            on_progress(total, total, "语音合成完成")
-        logger.info("TTS 合成完成(多段): video_id=%s 段数=%d", bundle.video_id, total)
-    finally:
-        # 清理临时片段目录:用 rmtree 幂等删除,容忍非空目录与异常残留
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    return out_path
+                on_progress(0, 1, "合成中文语音…")
+            await _synthesize_one(paragraphs[0], voice, out_path)
+            if on_progress:
+                on_progress(1, 1, "语音合成完成")
+            logger.info("TTS 合成完成(单段): video_id=%s", bundle.video_id)
+            return out_path
+
+        # 多段:逐段合成到资产包内临时目录,再拼接
+        tmp_dir = bundle.tts_parts_dir
+        # 幂等准备:若路径以非目录形式残留(异常中断遗留),先清除再创建
+        if tmp_dir.exists() and not tmp_dir.is_dir():
+            logger.warning("临时目录路径被文件占用,清除: %s", tmp_dir)
+            tmp_dir.unlink()
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        parts: list[Path] = []
+        try:
+            for i, para in enumerate(paragraphs, 1):
+                if on_progress:
+                    on_progress(i - 1, total, f"合成第 {i}/{total} 段…")
+                part = tmp_dir / f"part_{i:05d}.mp3"
+                await _synthesize_one(para, voice, part)
+                parts.append(part)
+            if on_progress:
+                on_progress(total, total, "拼接音频…")
+            # ffmpeg 是同步子进程,放线程池避免阻塞 event loop
+            # (多任务并发时若直接调用会卡住其它任务的 SSE 推送)
+            await asyncio.to_thread(_concat_mp3, parts, out_path)
+            if on_progress:
+                on_progress(total, total, "语音合成完成")
+            logger.info("TTS 合成完成(多段): video_id=%s 段数=%d", bundle.video_id, total)
+        finally:
+            # 清理临时片段目录:用 rmtree 幂等删除,容忍非空目录与异常残留
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return out_path

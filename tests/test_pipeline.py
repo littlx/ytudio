@@ -64,7 +64,7 @@ async def test_run_unknown_mode_written_to_state(isolated_dirs):
 @pytest.mark.asyncio
 async def test_run_cancel_cleans_up(isolated_dirs):
     state = TaskState()
-    async def slow_download(url, bundle, on_progress=None):
+    async def slow_download(url, bundle, on_progress=None, on_wait=None):
         await asyncio.sleep(100)  # 模拟长时间下载
 
     with patch("app.steps.yt.fetch_info", new=AsyncMock(return_value=_fake_info())), \
@@ -85,11 +85,10 @@ async def test_run_cancel_cleans_up(isolated_dirs):
 
 
 @pytest.mark.asyncio
-async def test_run_serialized_by_semaphore(isolated_dirs):
-    """信号量保证同一时间只跑一个任务(串行化)。
+async def test_run_concurrent_tasks_overlap(isolated_dirs):
+    """任务级并发:多任务可并行执行,不再被全局信号量串行化。
 
-    两个任务并发提交,记录各自的执行区间,验证区间不重叠。
-    用单一共享 patch 包裹两个任务,避免并发 patch 的竞争。
+    yt-dlp 信号量默认 3,两个任务的 fetch_info 阶段应该能时间重叠。
     """
     state1, state2 = TaskState(), TaskState()
     audio_file = config.OUTPUT_DIR / "audio.mp3"
@@ -97,7 +96,7 @@ async def test_run_serialized_by_semaphore(isolated_dirs):
     windows = {}  # tag -> (start_time, end_time)
     call_count = 0
 
-    async def slow_fetch(url, bundle=None, download_thumb=True):
+    async def slow_fetch(url, bundle=None, download_thumb=True, on_wait=None):
         nonlocal call_count
         call_count += 1
         tag = f"vid{call_count}"
@@ -118,5 +117,7 @@ async def test_run_serialized_by_semaphore(isolated_dirs):
     tags = sorted(windows.keys())
     s1, e1 = windows[tags[0]]
     s2, e2 = windows[tags[1]]
-    # 串行:区间不重叠(一个的 end <= 另一个的 start)
-    assert e1 <= s2 or e2 <= s1, f"任务区间重叠: {tags[0]}={s1}-{e1}, {tags[1]}={s2}-{e2}"
+    # 并发:区间应该重叠(yt 限流为 3,两个任务能同时进入)
+    assert not (e1 <= s2 or e2 <= s1), (
+        f"任务区间应重叠(任务级并发已启用): {tags[0]}={s1}-{e1}, {tags[1]}={s2}-{e2}"
+    )

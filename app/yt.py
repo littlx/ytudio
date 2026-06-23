@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import yt_dlp
 
-from . import config
+from . import concurrency, config
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,17 @@ def _ydl_base_opts() -> dict[str, Any]:
     return opts
 
 
-async def fetch_info(url: str, bundle: "AssetBundle | None" = None, download_thumb: bool = True) -> VideoInfo:
+async def fetch_info(
+    url: str,
+    bundle: "AssetBundle | None" = None,
+    download_thumb: bool = True,
+    on_wait: "Callable[[str], None] | None" = None,
+) -> VideoInfo:
     """获取视频元数据(标题、作者、ID、时长、可用字幕语言)。
 
     传入 bundle 时缩略图下载到资产包目录 thumb.%(ext)s;否则下到 output/ 根目录
     (向后兼容,实际调用方均传 bundle)。download_thumb=True 才下载缩略图。
+    on_wait 用于在 yt-dlp 全局信号量被占满时透传"等待下载源…"文案。
     """
     from . import assets  # 延迟导入避免循环
 
@@ -79,13 +85,15 @@ async def fetch_info(url: str, bundle: "AssetBundle | None" = None, download_thu
             subtitle_lang=pick_subtitle_lang(info),
         )
 
-    return await asyncio.to_thread(_extract)
+    async with concurrency.slot("yt", on_wait=on_wait):
+        return await asyncio.to_thread(_extract)
 
 
 async def extract_audio(
     url: str,
     bundle: "AssetBundle",
     on_progress: "Callable[[float, float], None] | None" = None,
+    on_wait: "Callable[[str], None] | None" = None,
 ) -> Path:
     """下载原始音频流到资产包目录,保留原有格式(浏览器原生可播 m4a/webm)。
 
@@ -122,10 +130,16 @@ async def extract_audio(
         logger.info("音频下载完成: id=%s 文件=%s", info.get("id", ""), final.name)
         return final
 
-    return await asyncio.to_thread(_run)
+    async with concurrency.slot("yt", on_wait=on_wait):
+        return await asyncio.to_thread(_run)
 
 
-async def extract_subtitle(url: str, bundle: "AssetBundle", source_lang: str = "en") -> tuple[str, str]:
+async def extract_subtitle(
+    url: str,
+    bundle: "AssetBundle",
+    source_lang: str = "en",
+    on_wait: "Callable[[str], None] | None" = None,
+) -> tuple[str, str]:
     """提取指定语言的字幕到资产包目录(模式 B 第 1 步)。
 
     单语言下载以规避 YouTube 429 限流。后续交由 DeepSeek 翻译整理成中文。
@@ -149,7 +163,8 @@ async def extract_subtitle(url: str, bundle: "AssetBundle", source_lang: str = "
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
 
-    await asyncio.to_thread(_run)
+    async with concurrency.slot("yt", on_wait=on_wait):
+        await asyncio.to_thread(_run)
 
     # 精确定位:在资产包目录内按语言前缀找字幕文件
     candidates = sorted(

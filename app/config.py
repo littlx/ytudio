@@ -40,6 +40,13 @@ TRANSLATE_CHUNK_SIZE: int = int(os.getenv("TRANSLATE_CHUNK_SIZE", "4000"))
 # 超过此值才退回分批。绝大多数视频（含数小时长演讲）都能整篇翻译。
 WHOLE_TRANSLATE_LIMIT: int = int(os.getenv("WHOLE_TRANSLATE_LIMIT", "800000"))
 
+# 子任务级并发上限:三类外部重资源各自独立限流。
+# 任务本身可并发,只在调用对应外部服务时受这三道闸阀节流,避免 IP/账号级 429。
+# YTDLP 覆盖 fetch_info / extract_audio / extract_subtitle 三类 yt-dlp 调用。
+YTDLP_CONCURRENCY: int = int(os.getenv("YTDLP_CONCURRENCY", "3"))
+TRANSLATE_CONCURRENCY: int = int(os.getenv("TRANSLATE_CONCURRENCY", "3"))
+TTS_CONCURRENCY: int = int(os.getenv("TTS_CONCURRENCY", "4"))
+
 # 服务端口与监听地址
 PORT: int = int(os.getenv("PORT", "8200"))
 # 监听地址：默认仅本地回环。如需手机/局域网访问，设为 0.0.0.0 并务必配置 AUTH_TOKEN，

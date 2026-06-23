@@ -11,7 +11,7 @@ import logging
 
 import httpx
 
-from . import config
+from . import concurrency, config
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +121,14 @@ async def _call_deepseek(
 async def translate_text(
     text: str,
     on_progress: "Callable[[int, int, str], None] | None" = None,
+    on_wait: "Callable[[str], None] | None" = None,
 ) -> list[str]:
     """把整段字幕翻译成中文，返回**段落列表**（按语义分段，供 TTS 分片合成）。
 
     默认整篇一次性翻译（上下文最完整、衔接最好）；
     仅当字幕超长（> WHOLE_TRANSLATE_LIMIT）时才分批，逐段调用后合并段落。
     on_progress(done, total, message) 用于进度回调，按批数计。
+    on_wait 用于在 DeepSeek 信号量被占满时透传"等待翻译资源…"文案。
     """
     if not config.has_deepseek_key():
         raise RuntimeError(
@@ -142,34 +144,35 @@ async def translate_text(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-        # 整篇翻译
-        if len(text) <= WHOLE_TRANSLATE_LIMIT:
-            if on_progress:
-                on_progress(0, 1, "整篇翻译中…")
-            result = await _call_deepseek(
-                client, headers,
-                "请翻译以下视频字幕，只输出译文，并按段落用空行分隔：\n\n" + text,
-            )
-            if on_progress:
-                on_progress(1, 1, "翻译完成")
-            paras = _split_paragraphs(result)
-            return paras if paras else [result.strip()]
+    async with concurrency.slot("translate", on_wait=on_wait):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+            # 整篇翻译
+            if len(text) <= WHOLE_TRANSLATE_LIMIT:
+                if on_progress:
+                    on_progress(0, 1, "整篇翻译中…")
+                result = await _call_deepseek(
+                    client, headers,
+                    "请翻译以下视频字幕，只输出译文，并按段落用空行分隔：\n\n" + text,
+                )
+                if on_progress:
+                    on_progress(1, 1, "翻译完成")
+                paras = _split_paragraphs(result)
+                return paras if paras else [result.strip()]
 
-        # 超长兜底：分批翻译，合并所有段落
-        chunks = _chunk_text(text, config.TRANSLATE_CHUNK_SIZE)
-        total = len(chunks)
-        all_paras: list[str] = []
-        for i, chunk in enumerate(chunks, 1):
+            # 超长兜底：分批翻译，合并所有段落
+            chunks = _chunk_text(text, config.TRANSLATE_CHUNK_SIZE)
+            total = len(chunks)
+            all_paras: list[str] = []
+            for i, chunk in enumerate(chunks, 1):
+                if on_progress:
+                    on_progress(i - 1, total, f"正在翻译第 {i}/{total} 段…")
+                content = await _call_deepseek(
+                    client, headers,
+                    "请翻译以下字幕片段，注意与前后文衔接，只输出译文，并按段落用空行分隔：\n\n" + chunk,
+                )
+                all_paras.extend(_split_paragraphs(content))
+                if on_progress:
+                    on_progress(i, total, f"已完成第 {i}/{total} 段")
             if on_progress:
-                on_progress(i - 1, total, f"正在翻译第 {i}/{total} 段…")
-            content = await _call_deepseek(
-                client, headers,
-                "请翻译以下字幕片段，注意与前后文衔接，只输出译文，并按段落用空行分隔：\n\n" + chunk,
-            )
-            all_paras.extend(_split_paragraphs(content))
-            if on_progress:
-                on_progress(i, total, f"已完成第 {i}/{total} 段")
-        if on_progress:
-            on_progress(total, total, "翻译完成")
-        return all_paras if all_paras else ["翻译结果为空"]
+                on_progress(total, total, "翻译完成")
+            return all_paras if all_paras else ["翻译结果为空"]

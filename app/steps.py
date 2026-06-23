@@ -21,6 +21,24 @@ logger = logging.getLogger(__name__)
 _PROGRESS_START = 5
 _PROGRESS_END = 100
 
+# 三个外部资源等待文案:concurrency.slot 被阻塞时透出
+_WAIT_LABEL = {
+    "yt": "等待下载源空闲…",
+    "translate": "等待翻译额度空闲…",
+    "tts": "等待 TTS 通道空闲…",
+}
+
+
+def _make_on_wait(report: "StepReport") -> Callable[[str], None]:
+    """构造 on_wait 回调:把"等待 xxx 资源"消息透到当前步骤的进度。
+
+    ratio 保持当前步骤起点(0.0),只换 message,避免回退百分比。
+    """
+    def _on_wait(resource: str) -> None:
+        report(0.0, _WAIT_LABEL.get(resource, f"等待 {resource} 空闲…"))
+    return _on_wait
+
+
 # 步骤内进度报告:(本步完成比例 0~1, 消息) -> None
 StepReport = Callable[[float, str], None]
 # 状态变更通知:每次 report 后触发,供外部推送 SSE
@@ -249,7 +267,7 @@ async def _fetch_info(ctx: Ctx, report: StepReport) -> None:
     report(0.1, "获取视频信息…")
     # fetch_info 前尚不知 video_id,用 task_id 作临时占位目录
     pending = assets.AssetBundle(f".pending_{ctx.state.task_id}")
-    info = await yt.fetch_info(ctx.url, bundle=pending)
+    info = await yt.fetch_info(ctx.url, bundle=pending, on_wait=_make_on_wait(report))
     ctx.info = info
     # 用真实 video_id 重建 bundle;pending 目录若残留由取消清理
     ctx.bundle = assets.AssetBundle(info.video_id)
@@ -293,7 +311,7 @@ async def _download_audio(ctx: Ctx, report: StepReport) -> None:
         else:
             report(0.5, f"下载音频: {int(downloaded / 1024 / 1024)}MB")
 
-    final = await yt.extract_audio(ctx.url, ctx.bundle, on_progress=_on_dl)
+    final = await yt.extract_audio(ctx.url, ctx.bundle, on_progress=_on_dl, on_wait=_make_on_wait(report))
     if not final.exists():
         raise RuntimeError("音频提取失败,文件未生成。")
     ctx.audio_ext = final.suffix
@@ -308,7 +326,7 @@ async def _extract_subtitle(ctx: Ctx, report: StepReport) -> None:
     """提取字幕到资产包。"""
     assert ctx.info is not None and ctx.bundle is not None
     report(0.0, "提取字幕…")
-    await yt.extract_subtitle(ctx.url, ctx.bundle, source_lang=ctx.info.subtitle_lang)
+    await yt.extract_subtitle(ctx.url, ctx.bundle, source_lang=ctx.info.subtitle_lang, on_wait=_make_on_wait(report))
     report(1.0, "字幕提取完成")
 
 
@@ -336,7 +354,7 @@ async def _translate(ctx: Ctx, report: StepReport) -> None:
     def _on_trans(done: int, total: int, msg: str) -> None:
         report(done / total if total > 0 else 0.5, msg)
 
-    paragraphs = await translate.translate_text(raw_text, on_progress=_on_trans)
+    paragraphs = await translate.translate_text(raw_text, on_progress=_on_trans, on_wait=_make_on_wait(report))
     ctx.paragraphs = paragraphs
 
     # 保存译文文稿
@@ -357,7 +375,8 @@ async def _synthesize(ctx: Ctx, report: StepReport) -> None:
         report(done / total if total > 0 else 0.5, msg)
 
     final = await tts.synthesize_speech(
-        ctx.paragraphs, ctx.bundle, voice=ctx.voice or None, on_progress=_on_tts
+        ctx.paragraphs, ctx.bundle, voice=ctx.voice or None,
+        on_progress=_on_tts, on_wait=_make_on_wait(report),
     )
     ctx.audio_ext = final.suffix
     report(1.0, "语音合成完成")
