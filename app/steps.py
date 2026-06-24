@@ -89,11 +89,13 @@ class Pipeline:
         task_id = state.task_id
         # 断点续传:读取已完成步骤索引(用索引而非 stage 名,避免同 stage 步骤冲突)
         completed_idx: set[int] = set()
+        progress_loaded = False
         if resume and ctx.bundle is not None:
             prog = ctx.bundle.load_progress()
             if prog:
                 completed_idx = set(prog.get("completed_steps", []))
                 logger.info("任务 %s 断点续传:已完成 %d 个步骤,将从断点继续", task_id, len(completed_idx))
+            progress_loaded = True
 
         weight_left = self._total_weight
         pct_cursor = _PROGRESS_START
@@ -119,6 +121,14 @@ class Pipeline:
             state.message = "处理中…"
             if emit is not None:
                 emit()
+
+            # 断点续传:若启动时 ctx.bundle 为空而未加载进度,此时若 bundle 已生成则延迟加载
+            if resume and not progress_loaded and ctx.bundle is not None:
+                prog = ctx.bundle.load_progress()
+                if prog:
+                    completed_idx = set(prog.get("completed_steps", []))
+                    logger.info("任务 %s 延迟加载断点进度:已完成 %d 个步骤,将从断点继续", task_id, len(completed_idx))
+                progress_loaded = True
 
             # 断点续传:跳过已完成步骤,恢复其产出到 ctx
             if idx in completed_idx:

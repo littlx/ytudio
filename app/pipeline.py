@@ -134,6 +134,8 @@ async def run(mode: str, url: str, state: TaskState, progress: ProgressFn | None
     try:
         pipeline = steps.get_pipeline(mode)
         ctx = steps.Ctx(url=url, mode=mode, voice=voice, state=state)
+        if state.video_id:
+            ctx.bundle = assets.AssetBundle(state.video_id)
         result = await pipeline.execute(ctx, emit=emit, resume=resume)
         state.result = result
         # 成功完成:推进到 100% 并保存元数据

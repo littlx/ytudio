@@ -242,3 +242,77 @@ async def test_pipeline_run_with_resume(isolated_dirs):
     # progress.json 应在成功完成后被清除
     assert not state.result.bundle.progress_path.exists()
     print("  pipeline.run(resume=False) 成功完成,progress.json 已清除")
+
+
+@pytest.mark.asyncio
+async def test_tasks_retry_resumes_from_breakpoint(isolated_dirs):
+    """验证 tasks.retry 重试时,能读取任务持久化记录中的 video_id 并在新任务中正确跳过已完成步骤。"""
+    from app import tasks
+
+    # 1. 模拟持久化的旧任务
+    task_id = "old_failed_task"
+    snap = {
+        "mode": "tts",
+        "url": "https://youtube.com/watch?v=123",
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "video_id": "testvid123",
+        "stage": "error",
+    }
+
+    # 将旧任务写入持久化存储
+    tasks._save_persisted({task_id: snap})
+
+    # 2. 预置 progress.json 到对应的 video_id 目录下,标记前3个步骤已完成
+    bundle = assets.AssetBundle("testvid123")
+    bundle.ensure_dir()
+    (bundle.dir / "subtitle.en.json3").write_text("Hello")
+    bundle.save_progress({
+        "completed_steps": [0, 1, 2],  # fetching + 2×subtitling
+        "info": {
+            "video_id": "testvid123",
+            "title": "Test Title",
+            "uploader": "Test Uploader",
+            "url": "https://youtube.com/watch?v=123",
+            "duration": 60.0,
+            "subtitle_lang": "en"
+        }
+    })
+
+    # 模拟剩下的步骤(translating, synthesizing, done)所需的文件
+    audio_file = config.OUTPUT_DIR / "tts.mp3"
+    audio_file.write_bytes(b"fake")
+
+    # 3. 运行 retry 并断言
+    # 监控 fetch_info 和 extract_subtitle 确保被跳过
+    fetch_calls = 0
+    async def fake_fetch(*args, **kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return _fake_info("testvid123")
+
+    extract_calls = 0
+    async def fake_extract(*args, **kwargs):
+        nonlocal extract_calls
+        extract_calls += 1
+
+    with patch("app.steps.yt.fetch_info", new=AsyncMock(side_effect=fake_fetch)), \
+         patch("app.steps.yt.extract_subtitle", new=AsyncMock(side_effect=fake_extract)), \
+         patch("app.steps.yt.parse_subtitle_to_text", return_value="Hello"), \
+         patch("app.steps.translate.translate_text", new=AsyncMock(return_value=["你好"])), \
+         patch("app.steps.tts.synthesize_speech", new=AsyncMock(return_value=audio_file)):
+
+        # 执行 retry(task_id)
+        res = await tasks.retry(task_id)
+        new_task_id = res["task_id"]
+
+        # 等待后台任务执行完成
+        state = tasks._tasks[new_task_id]
+        await state.task
+
+        # 验证结果
+        assert state.stage == "done"
+        assert fetch_calls == 0, "fetch_info 应被跳过"
+        assert extract_calls == 0, "extract_subtitle 应被跳过"
+        # 验证 progress.json 已被删除
+        assert not bundle.progress_path.exists()
+

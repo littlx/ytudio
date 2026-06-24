@@ -150,7 +150,7 @@ def init() -> None:
         logger.info("任务状态恢复:%d 个进行中任务标记为中断", interrupted)
 
 
-async def create(mode: str, url: str, voice: str = "", resume: bool = False) -> dict:
+async def create(mode: str, url: str, voice: str = "", resume: bool = False, video_id: str = "") -> dict:
     """创建并启动一个后台处理任务,返回 {"task_id": ...}。
 
     mode / url 已由路由层校验;voice 仅 TTS 模式生效。
@@ -160,6 +160,8 @@ async def create(mode: str, url: str, voice: str = "", resume: bool = False) -> 
     state.url = url
     state.mode = mode
     state.voice = voice
+    if video_id:
+        state.video_id = video_id
     _tasks[state.task_id] = state
     _queues[state.task_id] = asyncio.Queue()
     # 捕获当前 event loop:yt-dlp 下载进度 hook 在 worker 线程触发,
@@ -173,7 +175,7 @@ async def create(mode: str, url: str, voice: str = "", resume: bool = False) -> 
         loop.call_soon_threadsafe(_put, state.task_id, state)
 
     # 后台运行任务(voice 仅 TTS 模式生效)
-    logger.info("创建任务 %s: mode=%s resume=%s", state.task_id, mode, resume)
+    logger.info("创建任务 %s: mode=%s resume=%s video_id=%s", state.task_id, mode, resume, video_id)
     task = asyncio.create_task(pipeline.run(mode, url, state, progress, voice=voice, resume=resume))
     state.task = task  # 存引用供 /api/cancel 取消
     # 持有强引用防止 GC;任务结束延时清理任务表与队列
@@ -217,11 +219,12 @@ async def retry(task_id: str) -> dict:
     mode = snap.get("mode", "audio")
     url = snap.get("url", "")
     voice = snap.get("voice", "")
+    video_id = snap.get("video_id", "")
     if not url:
         raise HTTPException(400, "原任务缺少 URL,无法重试")
 
-    logger.info("任务 %s 触发断点重试: mode=%s url=%s", task_id, mode, url)
-    return await create(mode, url, voice=voice, resume=True)
+    logger.info("任务 %s 触发断点重试: mode=%s url=%s video_id=%s", task_id, mode, url, video_id)
+    return await create(mode, url, voice=voice, resume=True, video_id=video_id)
 
 
 async def cancel(task_id: str) -> dict:
