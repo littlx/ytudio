@@ -1,7 +1,7 @@
 // ytudio 前端入口:初始化各模块,编排事件绑定。
 // 服务端配置(has_deepseek_key/has_cookies/default_voice)由 index.html 内联脚本
 // 注入到 window.YTUDIO_CONFIG,api.js 读取。
-import { setState, persistVoice } from "./state.js";
+import { setState, persistVoice, subscribe } from "./state.js";
 import { DEFAULT_VOICE, fetchVoices, fetchHistory } from "./api.js";
 import { initPWA, initTabs } from "./pwa.js";
 import { initVoices, renderVoices } from "./views/voices.js";
@@ -31,6 +31,9 @@ persistVoice(savedVoice);
 
 // 播放器(在历史加载前初始化,以便 restoreLastSession 可用)
 initPlayer(renderHistory);
+
+// 订阅状态变化以自动刷新历史列表(比如 currentIndex 改变时高亮当前播放项)
+subscribe(renderHistory);
 
 // 历史操作按钮 + 音色面板 + cookies 面板
 initHistoryActions();

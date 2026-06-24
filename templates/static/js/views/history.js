@@ -26,7 +26,9 @@ function fmtSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + "MB";
 }
 
-export function renderHistory() {
+let renderScheduled = false;
+
+function doRenderHistory() {
   const { history, currentIndex, progressMap } = getState();
   const box = document.getElementById("history");
   if (!box) return;
@@ -80,6 +82,15 @@ export function renderHistory() {
       e.stopPropagation();
       await showTranscript(el.dataset.vid);
     });
+  });
+}
+
+export function renderHistory() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  queueMicrotask(() => {
+    renderScheduled = false;
+    doRenderHistory();
   });
 }
 
